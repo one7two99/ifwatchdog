@@ -36,11 +36,11 @@ tunnel is restarted.
 - `ifwatchdog/files/ifwatchdog.init` — procd service.
 - `ifwatchdog/files/ifwatchdog.config` — UCI defaults (disabled, monitor).
 - `luci-app-ifwatchdog/…/overview.js` — GUI; `…/rpcd/ifwatchdog` — status ubus; `…/acl.d/…` — ACL.
-- `tests/run.sh` — 43 mock checks (run without OpenWrt).
+- `tests/run.sh` — 103 mock checks (run without OpenWrt).
 
 ## How it was verified
 - **Static:** `shellcheck` (style level, clean) for all shell files.
-- **Unit/mock:** `tests/run.sh` — 43 checks (validators, denylist, `validate_config`, detection,
+- **Unit/mock:** `tests/run.sh` — 103 checks (validators, denylist, `validate_config`, detection,
   `take_action`/debounce/breaker, status JSON).
 - **Integration (QEMU, real OpenWrt 25.12.5):** against a **real ProtonVPN tunnel** + a
   **policy-routing kill switch** + a simulated client on the fail-closed network. Demonstrated:

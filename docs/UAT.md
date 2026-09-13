@@ -9,9 +9,19 @@ Safety first: monitor mode first, console fallback ready, reversible at any time
 
 ## Preconditions
 - `ifwatchdog` + `luci-app-ifwatchdog` installed; the service is enabled (`/etc/init.d/ifwatchdog enabled`).
-- **Console / serial access ready** (recovery in case SSH/networking drops).
-- Optional safety net: a scheduled **auto-disable** (e.g. a cron `/etc/init.d/ifwatchdog stop` after
-  30 min) until acceptance is done.
+
+## Before the first enable (pre-flight — do all four)
+The residual risk lives in commissioning, not in the code. Before enabling **any** instance with an
+action on the real router:
+1. **Serial/console access tested now** — physically confirm the console gives a root shell, so a lost
+   SSH/LAN path is recoverable. Do not rely on it untested.
+2. **Auto-disable armed *before* start** — schedule a safety net that stops the watchdog even if you
+   are locked out, e.g. `echo '*/5 * * * * /etc/init.d/ifwatchdog stop' >> /etc/crontabs/root` for the
+   acceptance window (remove it once accepted). Arm it **before** the first enable, not after.
+3. **Config backup + rollback command ready** — `cp /etc/config/ifwatchdog /root/ifwatchdog.uci.bak`;
+   know the rollback: `uci set ifwatchdog.<inst>.enabled='0' && /etc/init.d/ifwatchdog restart`.
+4. **Known-good `network`/pbr snapshot** — `cp /etc/config/network /root/network.uci.bak`
+   (and the pbr config if used), so a bad `ifup` target can be restored from a known-good copy.
 
 ## Safety gate (always first)
 1. A new instance starts with **`action='monitor'`** and a **small test window**.
@@ -28,14 +38,27 @@ Safety first: monitor mode first, console fallback ready, reversible at any time
 | 3b | Set `action_network='-a'` (option-injection), then `mgmt` / `lan2` | **Refused** each time → safe idle, `ifup` never runs; **LAN still reachable** | ☐ |
 | 3c | Invalid config (`action_network=lan`, or `debounce=0` with an action) | Status shows **`state=invalid` in the GUI** (red), not only in syslog | ☐ |
 | 3d | `kill -9` a running instance | Its row shows **stale (no update)** in the GUI, never a frozen "alive" | ☐ |
+| 3e | `method=handshake` on a **non-WireGuard/absent** interface | Status shows **`holding`** (amber), **no** action — an unmeasurable handshake never fires and is not shown as `alive` | ☐ |
 | 4 | `action=ifup`, `action_network=<wg>`; let the tunnel stall | ifwatchdog runs `ifup <wg>` → **fresh handshake**, interface recovers | ☐ |
 | 5 | Produce repeated failures | **Debounce** + **circuit breaker** hold (log `debounce …`, `circuit breaker … refusing`) | ☐ |
+| 5a | **Two** sections with the same `action_network=<wg>`, both `ifup`; make the tunnel stall so both act in the same cycle | **Exactly one** `ifup`; the second logs `debounce (under lock)` — the shared-target lock + under-lock re-check serialise them | ☐ |
+| 5b | With the two sections of 5a, `kill -9` the section **holding the lock** mid-action | The survivor logs **`breaking stale lock`** exactly **once** (after ~2 min) and still heals the stall; the killed row goes **stale** | ☐ |
+| 5c | Set `interval=300` on an instance and let one poll pass | The row is **not** flagged stale — the GUI threshold scales as `max(180 s, 3 × interval)` | ☐ |
 | 6 | Invalid config (e.g. empty `interface`) | **Fail-safe**: `invalid configuration - safe idle`, **no** action | ☐ |
 | 7 | Review logs/status | **No** secrets (only handshake age, ping, states); status JSON is secret-free | ☐ |
 
+## Staged activation (production roll-out)
+One change per step; do not bundle. Advance only if the previous stage was clean.
+1. **Monitor, one section, 48 h** — `action=monitor` on the real tunnel; confirm stalls are detected
+   and logged, with zero actions.
+2. **`ifup`, one section, 7 days** — switch that section to `ifup`; confirm real recoveries, debounce
+   and breaker behaviour, and no flapping over several quiet nights.
+3. **Second section** — only then add a second watchdog on the same or another target; re-check 5a/5b.
+
 ## Acceptance criteria
-- All 7 cases as expected; **lan/management never restarted**; no secrets in logs/status;
-  recovery reproducible within ~1–2 cycles; no flapping over a quiet night.
+- All cases (1–7, 3b–3e, 5a–5c) as expected; **lan/management never restarted**; no secrets in
+  logs/status; recovery reproducible within ~1–2 cycles; no flapping over a quiet night; two sections
+  on one target emit **one** action per stall and survive a killed lock holder.
 
 ## Rollback
 - `uci set ifwatchdog.<inst>.action='monitor'` (or `enabled='0'`) → `/etc/init.d/ifwatchdog restart`.

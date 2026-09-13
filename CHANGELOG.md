@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **H4:** `action=script` is confined to a root-owned, non-group/world-writable executable inside the
   package-owned `/usr/libexec/ifwatchdog.d/` (no `..`), checked via `test -O` + `find -perm` (BusyBox
   has no `stat`); the ACL description flags that write access to this package is root-equivalent.
+- **M-neu-2/M-neu-3 (concurrency):** the shared-target action lock is now an O_EXCL file create
+  (`set -C`) instead of `mkdir` — directory-creation atomicity is not honoured on every Linux
+  fs/kernel (observed broken on a dev host where O_EXCL still held). A lock older than 2 minutes is
+  treated as abandoned and broken once (`breaking stale lock`), so a SIGKILLed holder can no longer
+  block every section sharing a tunnel forever; a failed lock is reported `lockbusy`, not as the
+  breaker. `take_action` re-checks debounce **under** the lock, so two sections that both see a stall
+  in the same second still emit only one `ifup`.
+- **L-neu-5:** `action_network` is validated (`valid_ifname`) **before** it is used to build the
+  actions-file path, so a crafted `../../…` value can never place the state/lock file outside the
+  package state dir.
 
 ### Fixed
 - **M1:** debounce and the circuit breaker now use monotonic time (`/proc/uptime`), so an NTP step at
@@ -38,6 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a refused "Save & Apply" is visible (prominently) in the GUI, not only in syslog.
 - **M5:** stale status/actions/lock files are cleared on service start, and the GUI marks rows whose
   status stopped updating (> 180 s) as stale — a killed instance never shows as alive.
+- **M-neu-1:** the check loop only writes `alive` when health was actually **measured**. An
+  unmeasurable handshake (`method=handshake` on a non-WG/absent interface) now writes `holding` and
+  does not reset the failure counter, so the GUI no longer shows a hollow `alive` for an instance
+  that is only holding under uncertainty.
+- **M-neu-4:** the GUI staleness threshold scales with the check interval
+  (`max(180 s, 3 × interval)`), so an instance with `interval > 60` is no longer flagged stale on
+  every poll; the status JSON now carries `interval`. `holding`/`lockbusy` render amber
+  ("cannot measure / retry"), distinct from red (`invalid`/`disabled`/stale).
 - Low: validate the section name; warn when `ifup` returns non-zero (a failed *action* is now
   distinguishable from a failed *tunnel*); rate-limit the breaker log; expose `ping_timeout` in the
   GUI; declare `protected_networks` as a `list` in the sample config to match the GUI/backend.
@@ -62,7 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - Detection: interface-bound ping (`ping -I`) and/or WireGuard handshake age.
   - Safety: monitor by default, interface denylist (self-lockout protection), strict input validation
     (injection-safe), debounce, circuit breaker, fail-safe idle, secret-free status JSON.
-- Mock test harness (`tests/run.sh`, 43 checks) — runs without OpenWrt; shellcheck-clean.
+- Mock test harness (`tests/run.sh`, 103 checks) — runs without OpenWrt; shellcheck-clean.
 - Project scaffold: LuCI app layout, GPL-2.0-or-later, README, docs/ (spec + background).
 
 [Unreleased]: https://github.com/one7two99/ifwatchdog/compare/main...HEAD

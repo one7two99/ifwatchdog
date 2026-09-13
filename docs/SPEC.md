@@ -107,7 +107,9 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   the list via `protected_networks` (a `list` of glob patterns).
 - **Detection is tri-state.** `handshake_probe` sets `HS_STATE` = `fresh|stale|unknown`; `unknown`
   ("cannot measure": wg missing, non-WG/absent interface, no handshake yet, clock step) never drives
-  an action, and with `method=handshake` the instance holds. The status JSON carries `handshake_state`.
+  an action, and with `method=handshake` the instance holds — the loop then writes `state=holding`
+  (not `alive`) and keeps the failure counter, so a hold is never reported as measured health. The
+  status JSON carries `handshake_state`.
 - **`action=script` is confined** to a root-owned, non-group/world-writable executable inside
   `/usr/libexec/ifwatchdog.d/` (no `..`). Ownership/permissions are checked with `test -O` + `find`
   (stock BusyBox has no `stat`). Write access to the UCI package is root-equivalent by design.
@@ -115,11 +117,21 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   condition writes a status file (`disabled`/`invalid`) and idles — so it never storms procd and never
   vanishes from the GUI.
 - **Breaker/debounce use monotonic time** (`/proc/uptime`), immune to an NTP step at boot. The actions
-  file `act-<target>.actions` (shared across sections with the same target, serialised by a lock)
-  stores `<mono> <wall>` per action; wall time is display-only and the breaker deliberately resets on
-  reboot (tmpfs). `debounce`/`action_window` have floors (30 s / 300 s) when an action is configured.
-  Status states include `invalid`, `disabled`, and a GUI-side `stale` (no status update for > 180 s);
-  stale state files are cleared on service start.
+  file `act-<target>.actions` (shared across sections with the same target) stores `<mono> <wall>` per
+  action; wall time is display-only and the breaker deliberately resets on reboot (tmpfs).
+  `debounce`/`action_window` have floors (30 s / 300 s) when an action is configured.
+- **The shared-target lock is an O_EXCL file create** (`set -C; : > act-<target>.actions.lock`), not
+  `mkdir`: directory-creation atomicity is not honoured on every Linux fs/kernel (observed broken on a
+  dev host where O_EXCL still held), while O_EXCL is the POSIX atomic-create primitive. The prune +
+  count + append run under this lock, and `take_action` re-checks debounce **under** the lock, so two
+  sections seeing a stall in the same second still emit only one action. A lock older than **2 minutes**
+  is treated as abandoned and broken once (`breaking stale lock`), so a SIGKILLed holder cannot block
+  the shared target forever; a lock that cannot be taken is reported `lockbusy` (not the breaker).
+- **Status states:** `alive`, `holding`, `invalid`, `disabled`, and the transient `lockbusy`, plus a
+  GUI-side `stale` when the status file stopped updating for `max(180 s, 3 × interval)` (scales with
+  the interval so a slow instance is not flagged every poll). The status JSON carries `interval`.
+  `holding`/`lockbusy` are amber ("cannot measure / retry"); `invalid`/`disabled`/`stale` are red.
+  Stale state/lock files are cleared on service start.
 
 ### Dependencies
 - `ping -I` → **BusyBox ping supports `-I`** (no extra package needed).
