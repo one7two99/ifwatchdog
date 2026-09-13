@@ -42,13 +42,18 @@ function statusTable(instances) {
 		var la = it.last_action ? new Date(it.last_action * 1000).toLocaleString() : '-';
 		var age = (it.handshake_age != null) ? (it.handshake_age + 's') : '-';
 		// A status file that stopped updating means the process is gone
-		// (SIGKILL/OOM/rename): never keep showing the cached state as healthy.
-		var stale = it.updated ? (nowSec - it.updated > 180) : true;
+		// (SIGKILL/OOM/rename). Three missed cycles is the signal; a 180s floor
+		// avoids false staleness at short intervals on a loaded router.
+		var limit = Math.max(180, 3 * (it.interval || 60));
+		var stale = it.updated ? (nowSec - it.updated > limit) : true;
 		var state = stale ? _('stale (no update)') : (it.state || '-');
-		var warn  = stale || state == 'invalid' || state == 'disabled';
-		var stateCell = warn
+		// "cannot measure" (amber) is a different class from "refused" (red).
+		var hard  = stale || state == 'invalid' || state == 'disabled';
+		var soft  = state == 'holding' || state == 'lockbusy';
+		var stateCell = hard
 			? E('strong', { 'style': 'color:#a00' }, state)
-			: E('strong', {}, state);
+			: (soft ? E('strong', { 'style': 'color:#a60' }, state)
+			        : E('strong', {}, state));
 		return E('tr', { 'class': 'tr' }, [
 			E('td', { 'class': 'td' }, it.section || '-'),
 			E('td', { 'class': 'td' }, it.interface || '-'),

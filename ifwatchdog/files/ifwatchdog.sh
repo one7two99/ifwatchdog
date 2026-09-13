@@ -217,6 +217,8 @@ ping_ok() {
 # alive. With method=handshake, an unmeasurable handshake HOLDS (returns alive):
 # never act under uncertainty. method=both still falls through to the ping.
 is_alive() {
+	# HOLDING=1 means "returned alive to SUPPRESS an action, not measured healthy".
+	HOLDING=0
 	HS_AGE=""
 	HS_STATE=n/a
 	PING_RES="n/a"
@@ -238,6 +240,7 @@ is_alive() {
 		else
 			log info "handshake still unmeasurable on '$OPT_interface' - holding"
 		fi
+		HOLDING=1
 		return 0
 	fi
 	HS_UNKNOWN_LOGGED=0
@@ -249,16 +252,38 @@ is_alive() {
 # Monotonic seconds (routers have no RTC and may step wall clock at NTP sync).
 now_mono() { awk '{ printf "%d\n", $1; exit }' /proc/uptime 2>/dev/null || echo 0; }
 
-# Cheap mutex around the shared actions file; mkdir is atomic on tmpfs.
+# Detected once at startup: BusyBox may be built without fractional sleep, so a
+# 20x0.1s retry would otherwise become 20x1s and block the check loop for ~20s.
+lock_tuning() {
+	if sleep 0.1 2>/dev/null; then
+		LOCK_SLEEP=0.1; LOCK_TRIES=20      # ~2s worst case
+	else
+		LOCK_SLEEP=1;   LOCK_TRIES=3       # ~3s worst case
+	fi
+}
+
+# Cheap mutex around the shared actions file via an O_EXCL file create ("set -C"
+# noclobber). We deliberately do NOT use mkdir: directory-creation atomicity is
+# not honoured on every Linux fs/kernel (observed broken on a dev host where
+# O_EXCL still held), while O_EXCL is the POSIX atomic-create primitive. A lock
+# older than 2 minutes cannot belong to a live holder (every path holds it for
+# milliseconds), so break it - otherwise a SIGKILLed holder stops every section
+# sharing this target forever. Do NOT tie the threshold to 'interval'.
 lock_acquire() {
 	local i=0
-	while ! mkdir "$ACTIONS_FILE.lock" 2>/dev/null; do
-		i=$((i+1)); [ "$i" -ge 20 ] && return 1
-		sleep 0.1 2>/dev/null || sleep 1
+	while ! ( set -C; : > "$ACTIONS_FILE.lock" ) 2>/dev/null; do
+		i=$((i+1))
+		[ "$i" -ge "${LOCK_TRIES:-20}" ] && return 1
+		if find "$ACTIONS_FILE.lock" -maxdepth 0 -mmin +2 2>/dev/null | grep -q .; then
+			log err "breaking stale lock on $ACTIONS_FILE (holder gone)"
+			rm -f "$ACTIONS_FILE.lock"
+			continue
+		fi
+		sleep "${LOCK_SLEEP:-1}"
 	done
 	return 0
 }
-lock_release() { rmdir "$ACTIONS_FILE.lock" 2>/dev/null; }
+lock_release() { rm -f "$ACTIONS_FILE.lock"; }
 
 # Last recorded action: monotonic seconds (debounce) / wall seconds (display).
 # Actions file line format is "<mono> <wall>".
@@ -288,16 +313,27 @@ recent_action_count() {
 # serialised by a lock. 'monitor' is handled by the caller and never reaches here.
 take_action() {
 	local now_m last_m cnt
-	# ACTION_OUTCOME is a global set for the loop: acted|debounced|breaker
+	# ACTION_OUTCOME is a global set for the loop: acted|debounced|breaker|lockbusy
 	ACTION_OUTCOME=acted
 	now_m="$(now_mono)"
 	last_m="$(last_action_mono)"
+	# Fast path: avoid taking the lock when we are obviously debounced.
 	if [ "$last_m" -gt 0 ] && [ $(( now_m - last_m )) -lt "$OPT_debounce" ]; then
 		log info "debounce: $(( now_m - last_m ))s < ${OPT_debounce}s - skip"
 		ACTION_OUTCOME=debounced
 		return 0
 	fi
-	lock_acquire || { log err "breaker lock busy - refusing this cycle"; ACTION_OUTCOME=breaker; return 0; }
+	lock_acquire || { log err "action lock busy - refusing this cycle"; ACTION_OUTCOME=lockbusy; return 0; }
+	# Authoritative re-check: a section sharing this target may have acted between
+	# the fast path above and the lock being granted (preserves debounce spacing).
+	now_m="$(now_mono)"
+	last_m="$(last_action_mono)"
+	if [ "$last_m" -gt 0 ] && [ $(( now_m - last_m )) -lt "$OPT_debounce" ]; then
+		lock_release
+		log info "debounce (under lock): $(( now_m - last_m ))s < ${OPT_debounce}s - skip"
+		ACTION_OUTCOME=debounced
+		return 0
+	fi
 	cnt="$(recent_action_count "$now_m")"
 	if [ "$cnt" -ge "$OPT_max_actions" ]; then
 		# Rate-limit: err once on entry to the tripped state, info thereafter.
@@ -338,11 +374,13 @@ json_str() {
 }
 
 write_status() {
-	local state="$1" f tmp age
+	local state="$1" f tmp age iv
 	mkdir -p "$STATE_DIR" 2>/dev/null
 	f="$STATE_DIR/$SECTION.json"
 	tmp="$f.$$"
 	case "${HS_AGE:-}" in ''|*[!0-9]*) age=null ;; *) age="$HS_AGE" ;; esac
+	# interval drives the GUI staleness threshold; unvalidated on the invalid path.
+	case "${OPT_interval:-}" in ''|*[!0-9]*) iv=null ;; *) iv="$OPT_interval" ;; esac
 	cat > "$tmp" <<-JSON
 	{
 	  "section": "$(json_str "$SECTION")",
@@ -355,6 +393,7 @@ write_status() {
 	  "ping": "$(json_str "${PING_RES:-n/a}")",
 	  "fail_count": ${FAIL_COUNT:-0},
 	  "last_action": $(last_action_wall),
+	  "interval": $iv,
 	  "updated": $(date +%s)
 	}
 	JSON
@@ -371,7 +410,7 @@ safe_idle() { while :; do sleep 3600 & wait "$!"; done; }
 cleanup() {
 	log info "stopping (interface=${OPT_interface:-?})"
 	rm -f "$STATE_DIR/$SECTION.json" 2>/dev/null
-	[ -n "${ACTIONS_FILE:-}" ] && rmdir "${ACTIONS_FILE}.lock" 2>/dev/null
+	[ -n "${ACTIONS_FILE:-}" ] && rm -f "${ACTIONS_FILE}.lock"
 	exit 0
 }
 
@@ -385,11 +424,15 @@ main() {
 	mkdir -p "$STATE_DIR" 2>/dev/null
 
 	load_config
+	# Only a validated name may become part of a path (validate_config still
+	# decides whether the instance runs); guards action_network='../../x'.
+	valid_ifname "${OPT_action_network:-}" || OPT_action_network=""
 	# Breaker/debounce state is keyed on the TARGET network, so multiple sections
 	# watching the same tunnel share one counter (not 2x the cap).
 	ACTIONS_FILE="$STATE_DIR/act-${OPT_action_network:-$SECTION}.actions"
 	trap cleanup INT TERM
-	HS_AGE=""; HS_STATE=n/a; PING_RES="n/a"; FAIL_COUNT=0; HS_UNKNOWN_LOGGED=0; BREAKER_LOGGED=0
+	lock_tuning
+	HS_AGE=""; HS_STATE=n/a; PING_RES="n/a"; FAIL_COUNT=0; HS_UNKNOWN_LOGGED=0; BREAKER_LOGGED=0; HOLDING=0
 
 	# Fail-safe invariant: only SIGTERM/SIGINT may exit. Every "cannot work"
 	# condition writes a status file and idles, so the GUI still lists it.
@@ -426,9 +469,14 @@ main() {
 
 	while :; do
 		if is_alive; then
-			[ "$FAIL_COUNT" -ne 0 ] && log info "recovered (reset fail_count from $FAIL_COUNT)"
-			FAIL_COUNT=0
-			write_status alive
+			if [ "${HOLDING:-0}" = 1 ]; then
+				# Not measured healthy: do not claim recovery, keep the counter.
+				write_status holding
+			else
+				[ "$FAIL_COUNT" -ne 0 ] && log info "recovered (reset fail_count from $FAIL_COUNT)"
+				FAIL_COUNT=0
+				write_status alive
+			fi
 		else
 			FAIL_COUNT=$(( FAIL_COUNT + 1 ))
 			log info "down signal ${FAIL_COUNT}/${OPT_failures} (hs_age=${HS_AGE:-NA} ping=${PING_RES})"
