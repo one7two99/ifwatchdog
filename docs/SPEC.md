@@ -96,6 +96,16 @@ sleep interval; loop
 with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger on `ifwatchdog`, and
 `reload_service` → `restart` so config changes are picked up.
 
+### Safety / validation
+- Every UCI value is validated before use; strings that could become a command-line **option** are
+  rejected (a leading `-` never passes `valid_ifname`/`valid_host`), so a value can never turn into
+  `ifup -a` or a `ping` flag.
+- **Interface denylist** (`is_protected`): `DEFAULT_PROTECTED` holds glob patterns
+  (`lan lan[0-9]* mgmt* management* admin loopback`), matched under `set -f` so a pattern is never
+  expanded against the filesystem. Additionally, any network whose L3 `device` equals the LAN device
+  is protected (alias-network self-lockout). `wan` is deliberately **not** protected. Admins extend
+  the list via `protected_networks` (a `list` of glob patterns).
+
 ### Dependencies
 - `ping -I` → **BusyBox ping supports `-I`** (no extra package needed).
 - `wg` → `wireguard-tools` only for `method=handshake/both` — a **soft dependency** (the script checks

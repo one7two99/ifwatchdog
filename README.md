@@ -29,8 +29,10 @@ Because the plugin runs as `root` on a central device, these principles apply:
 
 1. **Monitor by default** — ships disabled and observe-only; it only acts after you deliberately enable
    an action per instance.
-2. **Interface protection** — critical interfaces (LAN bridge, management) are protected against an
-   accidental restart (self-lockout protection).
+2. **Interface protection** — protection covers `lan*`, `mgmt*`, `management*`, `admin`, `loopback`
+   (glob patterns), any network sharing the LAN's L3 device, and any value that looks like an option
+   (leading `-`), so an accidental or crafted `action_network` can never restart the admin's own path
+   (self-lockout protection). Extend it via `protected_networks`.
 3. **Input hardening** — every config value is strictly validated and quoted before use; no `eval`.
 4. **Circuit breaker** — a cap on actions per time window prevents "flapping".
 5. **Fail-safe** — on invalid/missing configuration it does nothing.

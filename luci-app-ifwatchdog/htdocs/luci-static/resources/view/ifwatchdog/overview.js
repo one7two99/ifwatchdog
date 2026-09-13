@@ -12,6 +12,17 @@ var callStatus = rpc.declare({
 	expect: { instances: [] }
 });
 
+// Client-side mirror of the backend valid_ifname(): the first char class
+// excludes '-', so a value can never become an ifup/ping option. Defence in
+// depth — the backend validates regardless.
+function ifnameValidate(section_id, value) {
+	if (value == '')
+		return true;
+	if (!/^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,14}$/.test(value))
+		return _('Invalid interface name (no leading "-", max 15 chars).');
+	return true;
+}
+
 function statusTable(instances) {
 	var head = E('tr', { 'class': 'tr table-titles' }, [
 		E('th', { 'class': 'th' }, _('Section')),
@@ -72,6 +83,7 @@ return view.extend({
 		o = s.option(form.Value, 'interface', _('Interface'),
 			_('L3 device to test — its WireGuard handshake age and/or an interface-bound ping.'));
 		o.rmempty = false;
+		o.validate = ifnameValidate;
 		devices.forEach(function(d) {
 			var n = d.getName();
 			if (n && n != 'lo') o.value(n);
@@ -118,12 +130,14 @@ return view.extend({
 		o.modalonly = true; o.datatype = 'uinteger'; o.default = '2';
 
 		o = s.option(form.Value, 'action_network', _('Network to restart'),
-			_('UCI network restarted by the "ifup" action. lan/loopback are always refused.'));
+			_('UCI network restarted by the "ifup" action. lan/management networks are always refused.'));
 		o.modalonly = true;
 		o.depends('action', 'ifup');
+		o.validate = ifnameValidate;
 		networks.forEach(function(n) {
 			var nm = n.getName();
-			if (nm && nm != 'loopback') o.value(nm);
+			if (nm && !/^(lan[0-9]*|loopback|mgmt.*|management.*|admin)$/.test(nm))
+				o.value(nm);
 		});
 
 		o = s.option(form.Value, 'script', _('Action script (absolute path)'),

@@ -25,9 +25,17 @@ export IFUP_LOG="$TMP/ifup.log"; : > "$IFUP_LOG"
 # --- stubs (env-driven) ----------------------------------------------------
 cat > "$STUBS/uci" <<'EOF'
 #!/bin/sh
-# understands: uci -q get ifwatchdog.<sec>.<opt>
-last=${3##*.}
-eval "v=\${CFG_${last}:-}"
+# understands:
+#   uci -q get ifwatchdog.<sec>.<opt>   -> CFG_<opt>
+#   uci -q get network.<name>.device    -> CFG_NET_<name>
+key=$3
+case "$key" in
+	network.*.device)
+		name=${key#network.}; name=${name%.device}
+		eval "v=\${CFG_NET_${name}:-}" ;;
+	*)
+		eval "v=\${CFG_${key##*.}:-}" ;;
+esac
 [ -n "${v:-}" ] && printf '%s\n' "$v"
 exit 0
 EOF
@@ -90,14 +98,35 @@ t_true  "valid_host ipv4"              valid_host 1.1.1.1
 t_true  "valid_host hostname"          valid_host example.com
 t_false "valid_host injection"         valid_host "a;rm -rf /"
 t_false "valid_host empty"             valid_host ""
+t_false "valid_ifname leading dash"    valid_ifname "-a"
+t_false "valid_ifname lone dash"       valid_ifname "-"
+t_false "valid_host leading dash"      valid_host "-I"
 
 echo "# denylist"
 set_base_config
 t_true  "is_protected lan"             is_protected lan
+t_true  "is_protected lan2"            is_protected lan2
+t_true  "is_protected mgmt"            is_protected mgmt
+t_true  "is_protected management"      is_protected management
+t_true  "is_protected admin"           is_protected admin
 t_true  "is_protected loopback"        is_protected loopback
 t_false "is_protected wg0"             is_protected wg0
-OPT_protected="mgmt wan"
-t_true  "is_protected extra mgmt"      is_protected mgmt
+t_false "is_protected wan (allowed)"   is_protected wan
+OPT_protected="corp*"
+t_true  "is_protected extra glob"      is_protected corpnet
+# The denylist must be deterministic and never depend on the process CWD.
+# 'set -f' makes a '*' entry a literal match-all glob instead of a CWD filename
+# expansion. Verify CWD-independence (the actual defect), and that '*' protects
+# all (safe over-protection, not a hole).
+OPT_protected='*'
+r1=$( (cd / && is_protected wg0) && echo P || echo N )
+r2=$( (cd "$TMP" && is_protected wg0) && echo P || echo N )
+t_eq "$r1" "$r2" "denylist result is CWD-independent (set -f)"
+t_eq P "$r1" "glob '*' protects all (safe over-protection)"
+OPT_protected=''
+export CFG_NET_lanmgmt=br-lan CFG_NET_lan=br-lan
+t_true  "is_protected alias on br-lan" is_protected lanmgmt
+unset CFG_NET_lanmgmt CFG_NET_lan
 
 echo "# validate_config"
 set_base_config; t_true  "good both config"           validate_config
@@ -108,6 +137,9 @@ set_base_config; OPT_action=ifup; OPT_action_network=wg0; t_true  "accept ifup->
 set_base_config; OPT_method=ping; OPT_ping_host="a;b";    t_false "reject ping bad host" validate_config
 set_base_config; OPT_action=script; OPT_script="rel/x";   t_false "reject relative script path" validate_config
 set_base_config; OPT_interval=2;                          t_false "reject interval < 5" validate_config
+set_base_config; OPT_action=ifup; OPT_action_network='-a';  t_false "reject ifup->'-a' (option injection)" validate_config
+set_base_config; OPT_action=ifup; OPT_action_network=mgmt;  t_false "reject ifup->mgmt (denylist)" validate_config
+set_base_config; OPT_action=ifup; OPT_action_network=lan2;  t_false "reject ifup->lan2 (denylist)" validate_config
 
 echo "# handshake_age"
 set_base_config

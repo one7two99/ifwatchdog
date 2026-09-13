@@ -17,7 +17,9 @@ PROG=ifwatchdog
 STATE_DIR="${IFWATCHDOG_STATE_DIR:-/var/run/ifwatchdog}"
 
 # Networks that must never be auto-restarted (self-lockout protection).
-DEFAULT_PROTECTED="lan loopback"
+# Entries are shell glob patterns, matched case-sensitively.
+# 'wan' is deliberately NOT protected: restarting wan is a legitimate use.
+DEFAULT_PROTECTED="lan lan[0-9]* mgmt* management* admin loopback"
 
 # --- logging ---------------------------------------------------------------
 
@@ -47,6 +49,7 @@ valid_uint() {
 valid_ifname() {
 	local n="${1:-}"
 	case "$n" in
+		-*) return 1 ;;                       # never let a value become an option (e.g. ifup -a)
 		''|*[!A-Za-z0-9_.-]*) return 1 ;;
 	esac
 	[ "${#n}" -le 15 ] || return 1   # Linux IFNAMSIZ - 1
@@ -54,18 +57,30 @@ valid_ifname() {
 }
 
 valid_host() {
-	# IPv4 / IPv6 / hostname characters only.
+	# IPv4 / IPv6 / hostname characters only; never an option.
 	case "${1:-}" in
+		-*) return 1 ;;
 		''|*[!A-Za-z0-9.:-]*) return 1 ;;
 		*) return 0 ;;
 	esac
 }
 
 is_protected() {
-	local n="$1" p
+	local n="$1" p dev lan_dev rc=1
+	# set -f: DEFAULT_PROTECTED entries are glob patterns to MATCH against $n,
+	# never to expand against the filesystem (guards protected_networks='*').
+	set -f
 	for p in $DEFAULT_PROTECTED ${OPT_protected:-}; do
-		[ "$n" = "$p" ] && return 0
+		# shellcheck disable=SC2254  # unquoted $p is intentional: glob match
+		case "$n" in $p) rc=0; break ;; esac
 	done
+	set +f
+	[ "$rc" = 0 ] && return 0
+	# Alias networks: protect anything sharing the LAN's L3 device
+	# (e.g. a second 'lanmgmt' interface on br-lan renegotiates the admin path).
+	dev="$(uci -q get "network.$n.device" 2>/dev/null)"
+	lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
+	[ -n "$dev" ] && [ -n "$lan_dev" ] && [ "$dev" = "$lan_dev" ] && return 0
 	return 1
 }
 

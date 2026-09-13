@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- **C1 (Critical):** reject a leading `-` in interface/network values (`valid_ifname`/`valid_host`),
+  so an `action_network` like `-a` can no longer become `ifup -a` (bring up all interfaces) → instant
+  self-lockout on a central router (option injection).
+- **H1:** the interface denylist now covers `lan*`, `mgmt*`, `management*`, `admin`, `loopback` and
+  any alias network sharing the LAN's L3 device; entries are glob patterns (extensible via
+  `protected_networks`) matched with `set -f`, so `protected_networks='*'` can no longer expand
+  against the process CWD. The LuCI dropdown no longer offers protected networks and validates the
+  name client-side.
+
 ### Fixed
 - Observable clean shutdown: a SIGTERM handler logs `stopping (interface=…)` and removes the status
   file (the instance disappears from the GUI live-status table).
