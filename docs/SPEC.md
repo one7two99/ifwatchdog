@@ -114,6 +114,12 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
 - **Fail-safe invariant:** the process exits only on SIGTERM/SIGINT; every other "cannot work"
   condition writes a status file (`disabled`/`invalid`) and idles — so it never storms procd and never
   vanishes from the GUI.
+- **Breaker/debounce use monotonic time** (`/proc/uptime`), immune to an NTP step at boot. The actions
+  file `act-<target>.actions` (shared across sections with the same target, serialised by a lock)
+  stores `<mono> <wall>` per action; wall time is display-only and the breaker deliberately resets on
+  reboot (tmpfs). `debounce`/`action_window` have floors (30 s / 300 s) when an action is configured.
+  Status states include `invalid`, `disabled`, and a GUI-side `stale` (no status update for > 180 s);
+  stale state files are cleared on service start.
 
 ### Dependencies
 - `ping -I` → **BusyBox ping supports `-I`** (no extra package needed).

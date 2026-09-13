@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   has no `stat`); the ACL description flags that write access to this package is root-equivalent.
 
 ### Fixed
+- **M1:** debounce and the circuit breaker now use monotonic time (`/proc/uptime`), so an NTP step at
+  boot (routers have no RTC) can no longer reset the breaker or freeze debounce. The actions file line
+  is `<mono> <wall>`; wall time is used only for display.
+- **M2:** `debounce` (>= 30 s) and `action_window` (>= 300 s) have floors when an action is configured,
+  so the breaker can actually trip and actions are spaced out; monitor mode still accepts 0.
+- **M3:** breaker/debounce state is keyed on the target network (`act-<network>.actions`), so two
+  sections watching the same tunnel share one counter; the prune+count+append is serialised by a lock.
+- **M4:** invalid/disabled instances write a status file (`state=invalid`/`disabled`) before idling, so
+  a refused "Save & Apply" is visible (prominently) in the GUI, not only in syslog.
+- **M5:** stale status/actions/lock files are cleared on service start, and the GUI marks rows whose
+  status stopped updating (> 180 s) as stale — a killed instance never shows as alive.
 - Observable clean shutdown: a SIGTERM handler logs `stopping (interface=…)` and removes the status
   file (the instance disappears from the GUI live-status table).
 - The check-loop sleep is now signal-interruptible (background + `wait`); otherwise procd's SIGKILL

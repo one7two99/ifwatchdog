@@ -3,6 +3,7 @@
 # shellcheck shell=dash
 # shellcheck disable=SC2034  # USE_PROCD/START/STOP are consumed by /etc/rc.common
 # shellcheck disable=SC3043  # 'local' is supported by BusyBox ash (the target)
+# shellcheck disable=SC2035  # cleanup globs are absolute paths, cannot start with -
 
 USE_PROCD=1
 START=95
@@ -26,6 +27,11 @@ start_instance() {
 }
 
 start_service() {
+	# Drop stale state from a previous run (renamed/removed sections, SIGKILL,
+	# and the pre-1.0 actions-file format) so the GUI never shows a dead instance
+	# as alive and the breaker starts clean.
+	rm -f /var/run/ifwatchdog/*.json /var/run/ifwatchdog/*.actions 2>/dev/null
+	rmdir /var/run/ifwatchdog/*.lock 2>/dev/null
 	config_load ifwatchdog
 	config_foreach start_instance watchdog
 }

@@ -26,6 +26,8 @@ Safety first: monitor mode first, console fallback ready, reversible at any time
 | 2 | Instance: `interface=<wg>`, `method=both`, `action=monitor`, short timings | On a stall: log `MONITOR … would act (no-op)`, status `state=monitor`, **no** action | ☐ |
 | 3 | Set `action=ifup`, `action_network=lan` (denylist test) | **Refused**: log `refusing: … 'lan' is protected` → safe idle; **`lan` untouched** | ☐ |
 | 3b | Set `action_network='-a'` (option-injection), then `mgmt` / `lan2` | **Refused** each time → safe idle, `ifup` never runs; **LAN still reachable** | ☐ |
+| 3c | Invalid config (`action_network=lan`, or `debounce=0` with an action) | Status shows **`state=invalid` in the GUI** (red), not only in syslog | ☐ |
+| 3d | `kill -9` a running instance | Its row shows **stale (no update)** in the GUI, never a frozen "alive" | ☐ |
 | 4 | `action=ifup`, `action_network=<wg>`; let the tunnel stall | ifwatchdog runs `ifup <wg>` → **fresh handshake**, interface recovers | ☐ |
 | 5 | Produce repeated failures | **Debounce** + **circuit breaker** hold (log `debounce …`, `circuit breaker … refusing`) | ☐ |
 | 6 | Invalid config (e.g. empty `interface`) | **Fail-safe**: `invalid configuration - safe idle`, **no** action | ☐ |

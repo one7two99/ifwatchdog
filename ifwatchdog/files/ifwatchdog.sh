@@ -168,6 +168,16 @@ validate_config() {
 			fi ;;
 		*) log crit "invalid 'action' (monitor|ifup|script)"; return 1 ;;
 	esac
+
+	# When an action is configured, the debounce/window floors ensure the
+	# breaker can actually trip and consecutive actions are spaced out.
+	# 0 stays legal in monitor mode (useful for testing, cannot act).
+	if [ "$OPT_action" != monitor ]; then
+		[ "$OPT_debounce" -ge 30 ] \
+			|| { log crit "'debounce' must be >= 30 when an action is configured"; return 1; }
+		[ "$OPT_action_window" -ge 300 ] \
+			|| { log crit "'action_window' must be >= 300 when an action is configured"; return 1; }
+	fi
 	return 0
 }
 
@@ -236,40 +246,67 @@ is_alive() {
 
 # --- action (debounce + circuit breaker) -----------------------------------
 
-last_action_time() {
+# Monotonic seconds (routers have no RTC and may step wall clock at NTP sync).
+now_mono() { awk '{ printf "%d\n", $1; exit }' /proc/uptime 2>/dev/null || echo 0; }
+
+# Cheap mutex around the shared actions file; mkdir is atomic on tmpfs.
+lock_acquire() {
+	local i=0
+	while ! mkdir "$ACTIONS_FILE.lock" 2>/dev/null; do
+		i=$((i+1)); [ "$i" -ge 20 ] && return 1
+		sleep 0.1 2>/dev/null || sleep 1
+	done
+	return 0
+}
+lock_release() { rmdir "$ACTIONS_FILE.lock" 2>/dev/null; }
+
+# Last recorded action: monotonic seconds (debounce) / wall seconds (display).
+# Actions file line format is "<mono> <wall>".
+last_action_mono() {
 	[ -f "$ACTIONS_FILE" ] || { echo 0; return; }
 	tail -n1 "$ACTIONS_FILE" 2>/dev/null | awk '{ print $1+0 }'
 }
+last_action_wall() {
+	[ -f "$ACTIONS_FILE" ] || { echo 0; return; }
+	tail -n1 "$ACTIONS_FILE" 2>/dev/null | awk '{ print $2+0 }'
+}
 
-# Prunes entries older than the window and echoes how many remain.
+# Prunes entries older than the window (by monotonic time) and echoes how many
+# remain. The caller holds the lock.
 recent_action_count() {
-	local now="$1" cut
-	cut=$(( now - OPT_action_window ))
+	local now_m="$1" cut
+	cut=$(( now_m - OPT_action_window ))
 	[ -f "$ACTIONS_FILE" ] || { echo 0; return; }
 	awk -v c="$cut" '$1+0 >= c { print }' "$ACTIONS_FILE" > "$ACTIONS_FILE.tmp" 2>/dev/null \
 		&& mv "$ACTIONS_FILE.tmp" "$ACTIONS_FILE"
 	awk 'END { print NR }' "$ACTIONS_FILE" 2>/dev/null || echo 0
 }
 
-# Performs the configured action, honouring debounce + circuit breaker.
-# 'monitor' is handled by the caller and never reaches here.
+# Performs the configured action, honouring debounce + circuit breaker on
+# monotonic time. The breaker file is keyed on the target network (see main()),
+# so sections sharing a target share one counter; the prune+count+append is
+# serialised by a lock. 'monitor' is handled by the caller and never reaches here.
 take_action() {
-	local now last cnt
+	local now_m last_m cnt
 	# ACTION_OUTCOME is a global set for the loop: acted|debounced|breaker
 	ACTION_OUTCOME=acted
-	now="$(date +%s)"
-	last="$(last_action_time)"
-	if [ "$last" -gt 0 ] && [ $(( now - last )) -lt "$OPT_debounce" ]; then
-		log info "debounce: $(( now - last ))s < ${OPT_debounce}s - skip"
+	now_m="$(now_mono)"
+	last_m="$(last_action_mono)"
+	if [ "$last_m" -gt 0 ] && [ $(( now_m - last_m )) -lt "$OPT_debounce" ]; then
+		log info "debounce: $(( now_m - last_m ))s < ${OPT_debounce}s - skip"
 		ACTION_OUTCOME=debounced
 		return 0
 	fi
-	cnt="$(recent_action_count "$now")"
+	lock_acquire || { log err "breaker lock busy - refusing this cycle"; ACTION_OUTCOME=breaker; return 0; }
+	cnt="$(recent_action_count "$now_m")"
 	if [ "$cnt" -ge "$OPT_max_actions" ]; then
 		log err "circuit breaker: ${cnt} actions in ${OPT_action_window}s >= ${OPT_max_actions} - refusing"
+		lock_release
 		ACTION_OUTCOME=breaker
 		return 0
 	fi
+	echo "$now_m $(date +%s)" >> "$ACTIONS_FILE"
+	lock_release
 	case "$OPT_action" in
 		ifup)
 			log warn "restarting network '$OPT_action_network' (ifup)"
@@ -278,7 +315,6 @@ take_action() {
 			log warn "running action script: $OPT_script"
 			"$OPT_script" "$SECTION" "$OPT_interface" "${OPT_action_network:-}" </dev/null ;;
 	esac
-	echo "$now" >> "$ACTIONS_FILE"
 }
 
 # --- status ----------------------------------------------------------------
@@ -310,7 +346,7 @@ write_status() {
 	  "handshake_state": "$(json_str "${HS_STATE:-n/a}")",
 	  "ping": "$(json_str "${PING_RES:-n/a}")",
 	  "fail_count": ${FAIL_COUNT:-0},
-	  "last_action": $(last_action_time),
+	  "last_action": $(last_action_wall),
 	  "updated": $(date +%s)
 	}
 	JSON
@@ -327,16 +363,19 @@ safe_idle() { while :; do sleep 3600 & wait "$!"; done; }
 cleanup() {
 	log info "stopping (interface=${OPT_interface:-?})"
 	rm -f "$STATE_DIR/$SECTION.json" 2>/dev/null
+	[ -n "${ACTIONS_FILE:-}" ] && rmdir "${ACTIONS_FILE}.lock" 2>/dev/null
 	exit 0
 }
 
 main() {
 	SECTION="${1:-}"
 	[ -n "$SECTION" ] || { echo "usage: $0 <section>" >&2; exit 2; }
-	ACTIONS_FILE="$STATE_DIR/$SECTION.actions"
 	mkdir -p "$STATE_DIR" 2>/dev/null
 
 	load_config
+	# Breaker/debounce state is keyed on the TARGET network, so multiple sections
+	# watching the same tunnel share one counter (not 2x the cap).
+	ACTIONS_FILE="$STATE_DIR/act-${OPT_action_network:-$SECTION}.actions"
 	trap cleanup INT TERM
 	HS_AGE=""; HS_STATE=n/a; PING_RES="n/a"; FAIL_COUNT=0; HS_UNKNOWN_LOGGED=0
 

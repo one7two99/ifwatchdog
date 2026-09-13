@@ -155,6 +155,9 @@ set_base_config; OPT_action=script; OPT_script="$TMP/sdir/ok.sh"
 t_false "reject world-writable script in dir"      validate_config
 chmod 0755 "$TMP/sdir/ok.sh"
 unset IFWATCHDOG_SCRIPT_DIR
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=0;       t_false "reject debounce=0 with action" validate_config
+set_base_config; OPT_action=monitor; OPT_debounce=0;                            t_true  "accept debounce=0 in monitor" validate_config
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_action_window=60; t_false "reject action_window<300 with action" validate_config
 
 echo "# handshake tri-state"
 set_base_config; OPT_method=handshake
@@ -230,13 +233,43 @@ take_action   # within debounce -> no new ifup
 t_eq 1 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "debounce blocks 2nd action"
 t_eq debounced "$ACTION_OUTCOME" "outcome=debounced when skipped"
 
-set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=0; OPT_max_actions=5
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=5; OPT_action_window=300
 : > "$IFUP_LOG"
-nowb=$(date +%s)
-n=0; while [ "$n" -lt 5 ]; do echo "$nowb" >> "$ACTIONS_FILE"; n=$((n+1)); done
+nowm=$(now_mono); old=$(( nowm - 40 ))   # 40s ago: past debounce, inside window
+n=0; while [ "$n" -lt 5 ]; do echo "$old $(date +%s)" >> "$ACTIONS_FILE"; n=$((n+1)); done
 take_action
 t_eq 0 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "circuit breaker refuses at max_actions"
 t_eq breaker "$ACTION_OUTCOME" "outcome=breaker when refused"
+
+echo "# monotonic guards survive an NTP step (M1)"
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=120
+nowm=$(now_mono); echo "$nowm $(( $(date +%s) + 999999 ))" > "$ACTIONS_FILE"
+: > "$IFUP_LOG"; take_action
+t_eq debounced "$ACTION_OUTCOME" "debounce uses monotonic time (immune to future wall clock)"
+t_eq 0 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "no ifup while debounced despite wall jump"
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=1; OPT_action_window=300
+nowm=$(now_mono); echo "$(( nowm - 40 )) 0" > "$ACTIONS_FILE"   # wall=1970, mono recent
+: > "$IFUP_LOG"; take_action
+t_eq breaker "$ACTION_OUTCOME" "breaker counts a 1970-wall entry (uses monotonic)"
+
+echo "# shared breaker key across sections (M3)"
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=0; OPT_max_actions=2; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null
+: > "$IFUP_LOG"
+take_action; take_action; take_action   # 3 actions on one shared counter, cap=2
+t_eq 2 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "shared breaker caps at max_actions across sections"
+
+echo "# status + json hardening on the invalid path (M4)"
+set_base_config; OPT_interface='a"; rm -rf /'   # crafted, unvalidated
+rm -f "$STATE_DIR/$SECTION.json"
+HS_AGE=""; HS_STATE=n/a; PING_RES=n/a; FAIL_COUNT=0
+write_status invalid
+SF="$STATE_DIR/$SECTION.json"
+if grep -q '"state": "invalid"' "$SF"; then ok "invalid status written"; else no "invalid status written"; fi
+if grep -q '"interface": "?"' "$SF"; then ok "crafted interface sanitised to '?'"; else no "crafted interface sanitised"; fi
+if command -v python3 >/dev/null 2>&1; then
+	if python3 -m json.tool "$SF" >/dev/null 2>&1; then ok "invalid status JSON parses"; else no "invalid status JSON parses"; fi
+else ok "(python3 absent)"; fi
 
 echo "# write_status JSON"
 set_base_config; OPT_action=monitor; HS_AGE=42; PING_RES=ok; FAIL_COUNT=1

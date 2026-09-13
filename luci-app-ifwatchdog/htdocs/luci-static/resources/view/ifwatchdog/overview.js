@@ -37,13 +37,22 @@ function statusTable(instances) {
 	if (!instances || !instances.length)
 		return E('em', {}, _('No running watchdog instances.'));
 
+	var nowSec = Date.now() / 1000;
 	var rows = instances.map(function(it) {
 		var la = it.last_action ? new Date(it.last_action * 1000).toLocaleString() : '-';
 		var age = (it.handshake_age != null) ? (it.handshake_age + 's') : '-';
+		// A status file that stopped updating means the process is gone
+		// (SIGKILL/OOM/rename): never keep showing the cached state as healthy.
+		var stale = it.updated ? (nowSec - it.updated > 180) : true;
+		var state = stale ? _('stale (no update)') : (it.state || '-');
+		var warn  = stale || state == 'invalid' || state == 'disabled';
+		var stateCell = warn
+			? E('strong', { 'style': 'color:#a00' }, state)
+			: E('strong', {}, state);
 		return E('tr', { 'class': 'tr' }, [
 			E('td', { 'class': 'td' }, it.section || '-'),
 			E('td', { 'class': 'td' }, it.interface || '-'),
-			E('td', { 'class': 'td' }, E('strong', {}, it.state || '-')),
+			E('td', { 'class': 'td' }, stateCell),
 			E('td', { 'class': 'td' }, age),
 			E('td', { 'class': 'td' }, it.handshake_state || '-'),
 			E('td', { 'class': 'td' }, it.ping || '-'),
