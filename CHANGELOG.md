@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a refused "Save & Apply" is visible (prominently) in the GUI, not only in syslog.
 - **M5:** stale status/actions/lock files are cleared on service start, and the GUI marks rows whose
   status stopped updating (> 180 s) as stale — a killed instance never shows as alive.
+- Low: validate the section name; warn when `ifup` returns non-zero (a failed *action* is now
+  distinguishable from a failed *tunnel*); rate-limit the breaker log; expose `ping_timeout` in the
+  GUI; declare `protected_networks` as a `list` in the sample config to match the GUI/backend.
 - Observable clean shutdown: a SIGTERM handler logs `stopping (interface=…)` and removes the status
   file (the instance disappears from the GUI live-status table).
 - The check-loop sleep is now signal-interruptible (background + `wait`); otherwise procd's SIGKILL

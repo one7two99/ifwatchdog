@@ -300,17 +300,25 @@ take_action() {
 	lock_acquire || { log err "breaker lock busy - refusing this cycle"; ACTION_OUTCOME=breaker; return 0; }
 	cnt="$(recent_action_count "$now_m")"
 	if [ "$cnt" -ge "$OPT_max_actions" ]; then
-		log err "circuit breaker: ${cnt} actions in ${OPT_action_window}s >= ${OPT_max_actions} - refusing"
+		# Rate-limit: err once on entry to the tripped state, info thereafter.
+		if [ "${BREAKER_LOGGED:-0}" = 0 ]; then
+			log err "circuit breaker: ${cnt} actions in ${OPT_action_window}s >= ${OPT_max_actions} - refusing"
+			BREAKER_LOGGED=1
+		else
+			log info "circuit breaker still tripped (${cnt}/${OPT_max_actions}) - refusing"
+		fi
 		lock_release
 		ACTION_OUTCOME=breaker
 		return 0
 	fi
+	BREAKER_LOGGED=0
 	echo "$now_m $(date +%s)" >> "$ACTIONS_FILE"
 	lock_release
 	case "$OPT_action" in
 		ifup)
 			log warn "restarting network '$OPT_action_network' (ifup)"
-			ifup "$OPT_action_network" ;;
+			ifup "$OPT_action_network" \
+				|| log warn "ifup '$OPT_action_network' returned non-zero (action may have failed)" ;;
 		script)
 			log warn "running action script: $OPT_script"
 			"$OPT_script" "$SECTION" "$OPT_interface" "${OPT_action_network:-}" </dev/null ;;
@@ -369,7 +377,11 @@ cleanup() {
 
 main() {
 	SECTION="${1:-}"
-	[ -n "$SECTION" ] || { echo "usage: $0 <section>" >&2; exit 2; }
+	# UCI section names are [A-Za-z0-9_]; validate so it is safe to interpolate
+	# into a path and into the status JSON (write_status assumes this).
+	case "$SECTION" in
+		''|*[!A-Za-z0-9_]*) echo "usage: $0 <section> (invalid section name)" >&2; exit 2 ;;
+	esac
 	mkdir -p "$STATE_DIR" 2>/dev/null
 
 	load_config
@@ -377,7 +389,7 @@ main() {
 	# watching the same tunnel share one counter (not 2x the cap).
 	ACTIONS_FILE="$STATE_DIR/act-${OPT_action_network:-$SECTION}.actions"
 	trap cleanup INT TERM
-	HS_AGE=""; HS_STATE=n/a; PING_RES="n/a"; FAIL_COUNT=0; HS_UNKNOWN_LOGGED=0
+	HS_AGE=""; HS_STATE=n/a; PING_RES="n/a"; FAIL_COUNT=0; HS_UNKNOWN_LOGGED=0; BREAKER_LOGGED=0
 
 	# Fail-safe invariant: only SIGTERM/SIGINT may exit. Every "cannot work"
 	# condition writes a status file and idles, so the GUI still lists it.

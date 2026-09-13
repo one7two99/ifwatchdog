@@ -52,6 +52,7 @@ EOF
 cat > "$STUBS/ifup" <<'EOF'
 #!/bin/sh
 echo "ifup $*" >> "${IFUP_LOG:-/dev/null}"
+[ -z "${IFUP_FAIL:-}" ]   # IFUP_FAIL set -> exit non-zero
 EOF
 cat > "$STUBS/logger" <<'EOF'
 #!/bin/sh
@@ -258,6 +259,18 @@ ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.
 : > "$IFUP_LOG"
 take_action; take_action; take_action   # 3 actions on one shared counter, cap=2
 t_eq 2 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "shared breaker caps at max_actions across sections"
+
+echo "# low-severity hardening"
+IFWATCHDOG_TEST=0 sh "$SCRIPT" 'bad;name' >/dev/null 2>&1; t_eq 2 "$?" "invalid section name exits 2"
+IFWATCHDOG_TEST=0 sh "$SCRIPT" '' >/dev/null 2>&1;         t_eq 2 "$?" "empty section name exits 2"
+# a failing ifup is still recorded as an attempted action (does not crash)
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=5; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-fail.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null
+: > "$IFUP_LOG"; IFUP_FAIL=1; export IFUP_FAIL
+take_action
+unset IFUP_FAIL
+t_eq acted "$ACTION_OUTCOME" "failing ifup still counts as an attempted action"
+t_ge 1 "$(wc -l < "$ACTIONS_FILE" | tr -d ' ')" "failing ifup is still recorded (breaker counts it)"
 
 echo "# status + json hardening on the invalid path (M4)"
 set_base_config; OPT_interface='a"; rm -rf /'   # crafted, unvalidated

@@ -123,6 +123,14 @@ return view.extend({
 		o.depends('method', 'ping');
 		o.depends('method', 'both');
 
+		o = s.option(form.Value, 'ping_timeout', _('Ping timeout (s)'),
+			_('Seconds to wait for a ping reply.'));
+		o.modalonly = true;
+		o.datatype = 'uinteger';
+		o.default = '3';
+		o.depends('method', 'ping');
+		o.depends('method', 'both');
+
 		o = s.option(form.Value, 'max_handshake_age', _('Max handshake age (s)'),
 			_('If the last WireGuard handshake is older than this, the tunnel counts as ' +
 			  'stalled (methods "handshake" and "both").'));
