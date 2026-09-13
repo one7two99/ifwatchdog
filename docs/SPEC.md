@@ -105,6 +105,15 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   expanded against the filesystem. Additionally, any network whose L3 `device` equals the LAN device
   is protected (alias-network self-lockout). `wan` is deliberately **not** protected. Admins extend
   the list via `protected_networks` (a `list` of glob patterns).
+- **Detection is tri-state.** `handshake_probe` sets `HS_STATE` = `fresh|stale|unknown`; `unknown`
+  ("cannot measure": wg missing, non-WG/absent interface, no handshake yet, clock step) never drives
+  an action, and with `method=handshake` the instance holds. The status JSON carries `handshake_state`.
+- **`action=script` is confined** to a root-owned, non-group/world-writable executable inside
+  `/usr/libexec/ifwatchdog.d/` (no `..`). Ownership/permissions are checked with `test -O` + `find`
+  (stock BusyBox has no `stat`). Write access to the UCI package is root-equivalent by design.
+- **Fail-safe invariant:** the process exits only on SIGTERM/SIGINT; every other "cannot work"
+  condition writes a status file (`disabled`/`invalid`) and idles — so it never storms procd and never
+  vanishes from the GUI.
 
 ### Dependencies
 - `ping -I` → **BusyBox ping supports `-I`** (no extra package needed).

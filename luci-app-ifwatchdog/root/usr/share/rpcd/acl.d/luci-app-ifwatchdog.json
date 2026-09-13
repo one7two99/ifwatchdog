@@ -1,6 +1,6 @@
 {
 	"luci-app-ifwatchdog": {
-		"description": "Grant access to the ifwatchdog configuration and status",
+		"description": "Grant access to ifwatchdog configuration and status. NOTE: write access to this package is root-equivalent (action=script runs as root) - do not delegate to semi-trusted accounts.",
 		"read": {
 			"uci": [ "ifwatchdog" ],
 			"ubus": { "ifwatchdog": [ "status" ] }

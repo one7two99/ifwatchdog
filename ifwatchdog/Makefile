@@ -40,6 +40,8 @@ define Package/ifwatchdog/install
 	$(INSTALL_BIN) ./files/ifwatchdog.init $(1)/etc/init.d/ifwatchdog
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/ifwatchdog.config $(1)/etc/config/ifwatchdog
+	# action=script is confined to this package-owned directory (validate_config).
+	$(INSTALL_DIR) $(1)/usr/libexec/ifwatchdog.d
 endef
 
 $(eval $(call BuildPackage,ifwatchdog))

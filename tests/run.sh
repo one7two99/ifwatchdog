@@ -41,6 +41,8 @@ exit 0
 EOF
 cat > "$STUBS/wg" <<'EOF'
 #!/bin/sh
+# WG_FAIL set -> behave like 'wg show <missing-iface>' (non-zero exit).
+[ -n "${WG_FAIL:-}" ] && exit 1
 printf 'PUBKEYxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\t%s\n' "${WG_HS:-0}"
 EOF
 cat > "$STUBS/ping" <<'EOF'
@@ -140,13 +142,61 @@ set_base_config; OPT_interval=2;                          t_false "reject interv
 set_base_config; OPT_action=ifup; OPT_action_network='-a';  t_false "reject ifup->'-a' (option injection)" validate_config
 set_base_config; OPT_action=ifup; OPT_action_network=mgmt;  t_false "reject ifup->mgmt (denylist)" validate_config
 set_base_config; OPT_action=ifup; OPT_action_network=lan2;  t_false "reject ifup->lan2 (denylist)" validate_config
+set_base_config; OPT_action=script; OPT_script="/tmp/x";    t_false "reject script outside ifwatchdog.d" validate_config
+set_base_config; OPT_action=script; OPT_script="/usr/libexec/ifwatchdog.d/../../../tmp/x"; t_false "reject script with .. traversal" validate_config
+# test -O checks ownership by the *effective* user, so this runs unprivileged:
+# the file is owned by the test user (= root on the device at runtime).
+mkdir -p "$TMP/sdir"; printf '#!/bin/sh\n' > "$TMP/sdir/ok.sh"; chmod 0755 "$TMP/sdir/ok.sh"
+IFWATCHDOG_SCRIPT_DIR="$TMP/sdir"
+set_base_config; OPT_action=script; OPT_script="$TMP/sdir/ok.sh"
+t_true  "accept owned non-writable script in dir" validate_config
+chmod 0777 "$TMP/sdir/ok.sh"
+set_base_config; OPT_action=script; OPT_script="$TMP/sdir/ok.sh"
+t_false "reject world-writable script in dir"      validate_config
+chmod 0755 "$TMP/sdir/ok.sh"
+unset IFWATCHDOG_SCRIPT_DIR
 
-echo "# handshake_age"
-set_base_config
+echo "# handshake tri-state"
+set_base_config; OPT_method=handshake
 now=$(date +%s)
-WG_HS=$((now-30)); export WG_HS
-age=$(handshake_age)
-if [ -n "$age" ] && [ "$age" -ge 29 ] && [ "$age" -le 33 ]; then ok "handshake_age ~30s"; else no "handshake_age ~30s (got '$age')"; fi
+WG_HS=$((now-10)); export WG_HS
+handshake_probe; t_eq fresh "$HS_STATE" "fresh handshake -> HS_STATE=fresh"
+if [ -n "$HS_AGE" ] && [ "$HS_AGE" -ge 9 ] && [ "$HS_AGE" -le 13 ]; then ok "HS_AGE ~10s"; else no "HS_AGE ~10s (got '$HS_AGE')"; fi
+WG_HS=$((now-500)); export WG_HS
+handshake_probe; t_eq stale "$HS_STATE" "stale handshake -> HS_STATE=stale"
+WG_HS=0; export WG_HS
+handshake_probe; t_eq unknown "$HS_STATE" "no handshake yet -> HS_STATE=unknown"
+WG_HS=$((now+3600)); export WG_HS
+handshake_probe; t_eq unknown "$HS_STATE" "future timestamp -> HS_STATE=unknown"
+WG_FAIL=1; export WG_FAIL
+handshake_probe; t_eq unknown "$HS_STATE" "wg error (iface not found) -> HS_STATE=unknown"
+unset WG_FAIL
+
+echo "# no action under uncertainty"
+set_base_config; OPT_method=handshake; OPT_action=ifup; OPT_action_network=wg0
+WG_HS=0; export WG_HS
+: > "$IFUP_LOG"
+t_true "unknown handshake holds (alive)" is_alive
+n=0; while [ "$n" -lt 5 ]; do is_alive >/dev/null; n=$((n+1)); done
+t_eq 0 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "unmeasurable handshake never triggers ifup"
+
+echo "# main() entry behaviour (no respawn storm on any 'enabled' spelling)"
+export CFG_interface=wg0 CFG_action=monitor CFG_method=ping CFG_ping_host=1.1.1.1
+export IFWATCHDOG_STATE_DIR_SAVE="$IFWATCHDOG_STATE_DIR"
+export IFWATCHDOG_STATE_DIR="$TMP/state-main"
+for v in 1 on true yes enabled 0 '' bogus; do
+	export CFG_enabled="$v"
+	if command -v timeout >/dev/null 2>&1; then
+		IFWATCHDOG_TEST=0 timeout 2 sh "$SCRIPT" test >/dev/null 2>&1; rc=$?
+	else
+		( IFWATCHDOG_TEST=0 sh "$SCRIPT" test >/dev/null 2>&1 ) & p=$!
+		sleep 2
+		if kill -0 "$p" 2>/dev/null; then kill -TERM "$p" 2>/dev/null; rc=124; else wait "$p"; rc=$?; fi
+	fi
+	t_eq 124 "$rc" "enabled='$v' does not exit on its own (rc=124=still running)"
+done
+unset CFG_enabled CFG_interface CFG_action CFG_method CFG_ping_host
+export IFWATCHDOG_STATE_DIR="$IFWATCHDOG_STATE_DIR_SAVE"; unset IFWATCHDOG_STATE_DIR_SAVE
 
 echo "# is_alive (method=both)"
 set_base_config; OPT_method=both

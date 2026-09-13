@@ -29,6 +29,7 @@ function statusTable(instances) {
 		E('th', { 'class': 'th' }, _('Interface')),
 		E('th', { 'class': 'th' }, _('State')),
 		E('th', { 'class': 'th' }, _('Handshake age')),
+		E('th', { 'class': 'th' }, _('HS state')),
 		E('th', { 'class': 'th' }, _('Ping')),
 		E('th', { 'class': 'th' }, _('Last action'))
 	]);
@@ -44,6 +45,7 @@ function statusTable(instances) {
 			E('td', { 'class': 'td' }, it.interface || '-'),
 			E('td', { 'class': 'td' }, E('strong', {}, it.state || '-')),
 			E('td', { 'class': 'td' }, age),
+			E('td', { 'class': 'td' }, it.handshake_state || '-'),
 			E('td', { 'class': 'td' }, it.ping || '-'),
 			E('td', { 'class': 'td' }, la)
 		]);
@@ -140,10 +142,12 @@ return view.extend({
 				o.value(nm);
 		});
 
-		o = s.option(form.Value, 'script', _('Action script (absolute path)'),
-			_('Absolute path to an executable run by the "script" action. Runs as root.'));
+		o = s.option(form.Value, 'script', _('Action script'),
+			_('Absolute path to a root-owned executable inside /usr/libexec/ifwatchdog.d/. ' +
+			  'Runs as root.'));
 		o.modalonly = true;
 		o.depends('action', 'script');
+		o.placeholder = '/usr/libexec/ifwatchdog.d/my-action.sh';
 
 		o = s.option(form.Value, 'debounce', _('Debounce (s)'),
 			_('Minimum seconds between two actions — prevents rapid repeats.'));

@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `protected_networks`) matched with `set -f`, so `protected_networks='*'` can no longer expand
   against the process CWD. The LuCI dropdown no longer offers protected networks and validates the
   name client-side.
+- **H2:** a truthy `enabled` value (`on`/`true`/`yes`/`enabled`) no longer makes the check script exit
+  and procd respawn it every 5 s forever; disabled/invalid instances idle instead (fail-safe: only
+  SIGTERM/SIGINT exits) and still write a status file, so they stay visible in the GUI.
+- **H3:** detection is tri-state (`fresh`/`stale`/`unknown`). An unmeasurable handshake (wg missing,
+  non-WG or absent interface, no handshake yet, clock step) is `unknown` and never drives an action —
+  `method=handshake` on e.g. `eth0` holds instead of firing forever. Shown as an `HS state` GUI column.
+- **H4:** `action=script` is confined to a root-owned, non-group/world-writable executable inside the
+  package-owned `/usr/libexec/ifwatchdog.d/` (no `..`), checked via `test -O` + `find -perm` (BusyBox
+  has no `stat`); the ACL description flags that write access to this package is root-equivalent.
 
 ### Fixed
 - Observable clean shutdown: a SIGTERM handler logs `stopping (interface=…)` and removes the status

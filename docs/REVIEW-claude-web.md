@@ -50,7 +50,9 @@ tunnel is restarted.
 
 ## Known limits / open questions
 - Heals **stalls**, not a genuine uplink outage (then fail-closed stays correctly offline).
-- `action=script` runs a root script (the path is validated as absolute + executable) — enough?
+- `action=script` — **answered:** absolute + executable was **not** enough; it is now confined to a
+  root-owned, non-group/world-writable file inside the package-owned `/usr/libexec/ifwatchdog.d/`
+  (checked via `test -O` + `find -perm`, since stock BusyBox has no `stat`).
 - Is the default `max_actions=5 / 3600s` right? Should the state file survive a reboot (currently
   `/var/run`, i.e. no — by design)?
 - Suggestions for additional guards that make sense on a security device are welcome.

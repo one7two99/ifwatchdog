@@ -142,11 +142,30 @@ validate_config() {
 			fi ;;
 		script)
 			[ -n "${OPT_script:-}" ] || { log crit "action 'script' needs 'script'"; return 1; }
+			# Confine to a package-owned directory. Absolute + executable is not
+			# enough: an account delegated only this UCI ACL could point at /tmp
+			# and get root execution. (IFWATCHDOG_SCRIPT_DIR is a test hook.)
+			_sdir="${IFWATCHDOG_SCRIPT_DIR:-/usr/libexec/ifwatchdog.d}"
 			case "$OPT_script" in
-				/*) : ;;
-				*) log crit "'script' must be an absolute path"; return 1 ;;
+				"$_sdir"/*[!/]) : ;;
+				*) log crit "'script' must live in $_sdir/"; return 1 ;;
 			esac
-			[ -x "$OPT_script" ] || { log crit "'script' not executable: $OPT_script"; return 1; } ;;
+			case "$OPT_script" in
+				*/../*|*/..) log crit "'script' must not contain '..'"; return 1 ;;
+			esac
+			[ -f "$OPT_script" ] && [ -x "$OPT_script" ] \
+				|| { log crit "'script' not an executable file: $OPT_script"; return 1; }
+			# root-owned and not group/world-writable. validate_config takes no
+			# args, so clobbering $@ via 'set --' here is safe.
+			# Owned by the service user (root at runtime) and not writable by
+			# group/other, so a non-root user cannot alter what root executes.
+			# stat(1) is not in stock BusyBox, so use test -O + find -perm.
+			# shellcheck disable=SC3013  # -O is supported by BusyBox ash test
+			[ -O "$OPT_script" ] \
+				|| { log crit "'script' must be owned by the service user (root)"; return 1; }
+			if find "$OPT_script" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) 2>/dev/null | grep -q .; then
+				log crit "'script' is group/world-writable"; return 1
+			fi ;;
 		*) log crit "invalid 'action' (monitor|ifup|script)"; return 1 ;;
 	esac
 	return 0
@@ -154,36 +173,64 @@ validate_config() {
 
 # --- detection -------------------------------------------------------------
 
-# Echoes handshake age in seconds, or nothing if it cannot be determined.
-handshake_age() {
+# Sets HS_AGE (seconds, may be empty) and HS_STATE (fresh|stale|unknown).
+# 'unknown' = "cannot measure" (wg missing, not a wg iface, iface absent, peer
+# never handshaked, clock stepped) and must NEVER drive an action.
+handshake_probe() {
+	HS_AGE=""
+	HS_STATE=unknown
 	command -v wg >/dev/null 2>&1 || return 0
-	local now latest
+	local out now latest
+	out="$(wg show "$OPT_interface" latest-handshakes 2>/dev/null)" || return 0
+	[ -n "$out" ] || return 0
+	latest="$(printf '%s\n' "$out" | awk '{ if ($2+0 > m) m=$2 } END { print m+0 }')"
+	[ "$latest" -gt 0 ] 2>/dev/null || return 0      # peer never handshaked yet
 	now="$(date +%s)"
-	latest="$(wg show "$OPT_interface" latest-handshakes 2>/dev/null \
-		| awk '{ if ($2+0 > m) m=$2 } END { print m+0 }')"
-	[ -n "$latest" ] && [ "$latest" -gt 0 ] 2>/dev/null || return 0
-	echo $(( now - latest ))
+	HS_AGE=$(( now - latest ))
+	if [ "$HS_AGE" -lt 0 ]; then                      # clock stepped backwards / future stamp
+		HS_AGE=""
+		return 0
+	fi
+	if [ "$HS_AGE" -le "$OPT_max_handshake_age" ]; then
+		HS_STATE=fresh
+	else
+		HS_STATE=stale
+	fi
+	return 0
 }
 
 ping_ok() {
 	ping -I "$OPT_interface" -c 1 -W "$OPT_ping_timeout" "$OPT_ping_host" >/dev/null 2>&1
 }
 
-# Sets HS_AGE and PING_RES for status; returns 0 if the interface looks alive.
+# Sets HS_AGE/HS_STATE/PING_RES for status; returns 0 if the interface looks
+# alive. With method=handshake, an unmeasurable handshake HOLDS (returns alive):
+# never act under uncertainty. method=both still falls through to the ping.
 is_alive() {
 	HS_AGE=""
+	HS_STATE=n/a
 	PING_RES="n/a"
 	case "$OPT_method" in
 		handshake|both)
-			HS_AGE="$(handshake_age)"
-			if [ -n "$HS_AGE" ] && [ "$HS_AGE" -le "$OPT_max_handshake_age" ]; then
-				return 0
-			fi ;;
+			handshake_probe
+			[ "$HS_STATE" = fresh ] && { HS_UNKNOWN_LOGGED=0; return 0; } ;;
 	esac
 	case "$OPT_method" in
 		ping|both)
-			if ping_ok; then PING_RES="ok"; return 0; else PING_RES="fail"; fi ;;
+			if ping_ok; then PING_RES="ok"; return 0; else PING_RES="fail"; fi
+			return 1 ;;
 	esac
+	# method=handshake only, and the handshake was not fresh:
+	if [ "$HS_STATE" = unknown ]; then
+		if [ "${HS_UNKNOWN_LOGGED:-0}" = 0 ]; then
+			log err "handshake unmeasurable on '$OPT_interface' - holding (no action)"
+			HS_UNKNOWN_LOGGED=1
+		else
+			log info "handshake still unmeasurable on '$OPT_interface' - holding"
+		fi
+		return 0
+	fi
+	HS_UNKNOWN_LOGGED=0
 	return 1
 }
 
@@ -236,21 +283,32 @@ take_action() {
 
 # --- status ----------------------------------------------------------------
 
+# Echo $1 if it is a safe token, else '?'. write_status runs on the invalid and
+# disabled paths too, where fields are NOT yet validated, so keep any crafted
+# UCI value out of the JSON the GUI parses.
+json_str() {
+	case "${1:-}" in
+		''|*[!A-Za-z0-9_.:/-]*) printf '?' ;;
+		*) printf '%s' "$1" ;;
+	esac
+}
+
 write_status() {
-	local state="$1" f tmp
+	local state="$1" f tmp age
 	mkdir -p "$STATE_DIR" 2>/dev/null
 	f="$STATE_DIR/$SECTION.json"
 	tmp="$f.$$"
-	# All embedded values are validated (ifname/method/action) or numeric.
+	case "${HS_AGE:-}" in ''|*[!0-9]*) age=null ;; *) age="$HS_AGE" ;; esac
 	cat > "$tmp" <<-JSON
 	{
-	  "section": "$SECTION",
-	  "interface": "$OPT_interface",
-	  "method": "$OPT_method",
-	  "action": "$OPT_action",
-	  "state": "$state",
-	  "handshake_age": ${HS_AGE:-null},
-	  "ping": "$PING_RES",
+	  "section": "$(json_str "$SECTION")",
+	  "interface": "$(json_str "${OPT_interface:-}")",
+	  "method": "$(json_str "${OPT_method:-}")",
+	  "action": "$(json_str "${OPT_action:-}")",
+	  "state": "$(json_str "$state")",
+	  "handshake_age": $age,
+	  "handshake_state": "$(json_str "${HS_STATE:-n/a}")",
+	  "ping": "$(json_str "${PING_RES:-n/a}")",
 	  "fail_count": ${FAIL_COUNT:-0},
 	  "last_action": $(last_action_time),
 	  "updated": $(date +%s)
@@ -280,12 +338,21 @@ main() {
 
 	load_config
 	trap cleanup INT TERM
-	if [ "${OPT_enabled:-0}" != "1" ]; then
-		log info "section disabled - exiting"
-		exit 0
-	fi
+	HS_AGE=""; HS_STATE=n/a; PING_RES="n/a"; FAIL_COUNT=0; HS_UNKNOWN_LOGGED=0
+
+	# Fail-safe invariant: only SIGTERM/SIGINT may exit. Every "cannot work"
+	# condition writes a status file and idles, so the GUI still lists it.
+	case "${OPT_enabled:-0}" in
+		1|on|true|yes|enabled) : ;;
+		*)
+			log info "section disabled - idle"
+			write_status disabled
+			safe_idle ;;
+	esac
+
 	if ! validate_config; then
 		log crit "invalid configuration - safe idle (no action taken)"
+		write_status invalid
 		safe_idle
 	fi
 
@@ -294,16 +361,16 @@ main() {
 		handshake|both)
 			if ! command -v wg >/dev/null 2>&1; then
 				if [ "$OPT_method" = handshake ]; then
-					log err "'wg' not found and method=handshake - safe idle"; safe_idle
+					log err "'wg' not found and method=handshake - safe idle"
+					write_status invalid; safe_idle
 				fi
 				log warn "'wg' not found - degrading method 'both' -> 'ping'"
 				OPT_method=ping
 				valid_host "${OPT_ping_host:-}" \
-					|| { log crit "no valid 'ping_host' after degrade - safe idle"; safe_idle; }
+					|| { log crit "no valid 'ping_host' after degrade - safe idle"; write_status invalid; safe_idle; }
 			fi ;;
 	esac
 
-	FAIL_COUNT=0
 	log info "started: iface=$OPT_interface method=$OPT_method action=$OPT_action interval=${OPT_interval}s"
 
 	while :; do
