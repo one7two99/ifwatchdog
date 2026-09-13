@@ -1,0 +1,30 @@
+# Build artifacts
+*.apk
+*.ipk
+/bin/
+/build/
+/dl/
+/tmp/
+/.sdk/
+
+# QEMU / test images (never check in — large + binary)
+*.img
+*.img.gz
+*.qcow2
+*.vmdk
+openwrt-*-generic-*.bin
+
+# Editor / OS
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Test secrets / throwaway WireGuard configs: NEVER commit
+testdata/
+secrets/
+*.conf
+*.wgconf
+*proton*.key
+*.priv

@@ -1,0 +1,12 @@
+{
+	"luci-app-ifwatchdog": {
+		"description": "Grant access to the ifwatchdog configuration and status",
+		"read": {
+			"uci": [ "ifwatchdog" ],
+			"ubus": { "ifwatchdog": [ "status" ] }
+		},
+		"write": {
+			"uci": [ "ifwatchdog" ]
+		}
+	}
+}

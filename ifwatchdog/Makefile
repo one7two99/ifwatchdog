@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+include $(TOPDIR)/rules.mk
+
+PKG_NAME:=ifwatchdog
+PKG_VERSION:=0.1.0
+PKG_RELEASE:=1
+
+PKG_MAINTAINER:=one7two99
+PKG_LICENSE:=GPL-2.0-or-later
+PKG_LICENSE_FILES:=LICENSE
+
+include $(INCLUDE_DIR)/package.mk
+
+define Package/ifwatchdog
+  SECTION:=net
+  CATEGORY:=Network
+  TITLE:=Interface health watchdog (ping + WireGuard handshake)
+  URL:=https://github.com/one7two99/ifwatchdog
+  PKGARCH:=all
+endef
+
+define Package/ifwatchdog/description
+  Monitors a network interface and restarts it when it silently stalls,
+  using an interface-bound ping and/or WireGuard handshake age. Safety-first:
+  monitor by default, interface denylist, input validation, debounce and a
+  circuit breaker. Configurable via UCI (/etc/config/ifwatchdog).
+endef
+
+define Package/ifwatchdog/conffiles
+/etc/config/ifwatchdog
+endef
+
+define Build/Compile
+endef
+
+define Package/ifwatchdog/install
+	$(INSTALL_DIR) $(1)/usr/libexec
+	$(INSTALL_BIN) ./files/ifwatchdog.sh $(1)/usr/libexec/ifwatchdog.sh
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/ifwatchdog.init $(1)/etc/init.d/ifwatchdog
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_CONF) ./files/ifwatchdog.config $(1)/etc/config/ifwatchdog
+endef
+
+$(eval $(call BuildPackage,ifwatchdog))

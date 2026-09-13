@@ -1,0 +1,27 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# rpcd backend for luci-app-ifwatchdog: exposes secret-free status JSON.
+
+case "$1" in
+	list)
+		echo '{ "status": { } }'
+		;;
+	call)
+		case "$2" in
+			status)
+				printf '{ "instances": ['
+				first=1
+				for f in /var/run/ifwatchdog/*.json; do
+					[ -f "$f" ] || continue
+					[ "$first" = 1 ] || printf ','
+					cat "$f"
+					first=0
+				done
+				printf '] }\n'
+				;;
+			*)
+				echo '{ }'
+				;;
+		esac
+		;;
+esac
