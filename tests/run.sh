@@ -219,6 +219,16 @@ set_base_config; OPT_method=ping
 PING_RESULT=ok;   export PING_RESULT; t_true  "ping-only: ok -> alive" is_alive
 PING_RESULT=fail; export PING_RESULT; t_false "ping-only: fail -> down" is_alive
 
+echo "# holding is not alive: an unmeasurable handshake suppresses an action without faking health (5A.1)"
+set_base_config; OPT_method=handshake; OPT_interface=wg0
+WG_HS=0; export WG_HS                       # peer never handshaked -> unknown
+t_true  "hs-only: unknown handshake returns alive (holds, no action)" is_alive
+t_eq 1 "$HOLDING"       "hs-only: HOLDING=1 marks a hold, not measured health"
+t_eq unknown "$HS_STATE" "hs-only: HS_STATE is unknown while holding"
+WG_HS=$((now-10)); export WG_HS             # fresh handshake -> measured health
+t_true  "hs-only: fresh handshake returns alive" is_alive
+t_eq 0 "$HOLDING"       "hs-only: fresh handshake is measured health (HOLDING=0)"
+
 echo "# take_action + debounce + circuit breaker"
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=120
 : > "$IFUP_LOG"
@@ -259,6 +269,42 @@ ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.
 : > "$IFUP_LOG"
 take_action; take_action; take_action   # 3 actions on one shared counter, cap=2
 t_eq 2 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "shared breaker caps at max_actions across sections"
+
+echo "# two sections sharing a target, CONCURRENT processes (5B.1 / M-neu-2)"
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=5; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null
+: > "$IFUP_LOG"
+for _ in 1 2 3 4; do ( take_action ) & done
+wait
+t_eq 1 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "concurrent: debounce allows exactly one ifup"
+t_eq 1 "$(wc -l < "$ACTIONS_FILE" | tr -d ' ')" "concurrent: exactly one action recorded"
+
+echo "# a stale lock (holder gone) is broken; a fresh lock still blocks (5B.2 / M-neu-3)"
+set_base_config; OPT_action=ifup; OPT_action_network=stale; OPT_debounce=30; OPT_max_actions=5; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-stale.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock"
+LOCK_TRIES=2; LOCK_SLEEP=0.05
+: > "$ACTIONS_FILE.lock"                      # fresh lock held by a (simulated) live holder
+if lock_acquire; then no "fresh lock: acquire must be refused (mutex intact)"; lock_release
+else ok "fresh lock: acquire refused (mutex intact)"; fi
+rm -f "$ACTIONS_FILE.lock"
+: > "$ACTIONS_FILE.lock"                      # stale lock: holder gone > 2 min ago
+touch -d '3 minutes ago' "$ACTIONS_FILE.lock" 2>/dev/null || touch -t 200001010000 "$ACTIONS_FILE.lock"
+if lock_acquire; then ok "stale lock: broken and acquired"; lock_release
+else no "stale lock: should be broken and acquired"; fi
+rm -f "$ACTIONS_FILE.lock"
+: > "$IFUP_LOG"; : > "$ACTIONS_FILE.lock"     # held fresh lock -> take_action must not act
+LOCK_TRIES=2; LOCK_SLEEP=0.05
+take_action
+t_eq lockbusy "$ACTION_OUTCOME" "held fresh lock -> take_action reports lockbusy"
+t_eq 0 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "held fresh lock -> no ifup while locked"
+rm -f "$ACTIONS_FILE.lock"
+
+echo "# an action_network that tries to escape the state dir cannot build a path outside it (5A.5)"
+esc_network(){ n="$1"; valid_ifname "${n:-}" || n=""; printf '%s' "$TMP/state/act-${n:-SEC}.actions"; }
+case "$(esc_network '../../tmp/x')" in *..*) esc=OUTSIDE ;; *) esc=INSIDE ;; esac
+t_eq INSIDE "$esc" "action_network '../../tmp/x' is rejected -> path stays inside the state dir"
+case "$(esc_network 'wg1')" in */act-wg1.actions) esc=KEPT ;; *) esc=LOST ;; esac
+t_eq KEPT "$esc" "a valid action_network is preserved for the path"
 
 echo "# low-severity hardening"
 IFWATCHDOG_TEST=0 sh "$SCRIPT" 'bad;name' >/dev/null 2>&1; t_eq 2 "$?" "invalid section name exits 2"
