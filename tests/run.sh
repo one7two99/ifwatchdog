@@ -56,6 +56,8 @@ echo "ifup $*" >> "${IFUP_LOG:-/dev/null}"
 EOF
 cat > "$STUBS/logger" <<'EOF'
 #!/bin/sh
+# LOGCAP set -> append the message for assertions; otherwise a no-op like syslog.
+[ -n "${LOGCAP:-}" ] && printf '%s\n' "$*" >> "$LOGCAP"
 exit 0
 EOF
 chmod +x "$STUBS"/*
@@ -158,6 +160,19 @@ chmod 0755 "$TMP/sdir/ok.sh"
 unset IFWATCHDOG_SCRIPT_DIR
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=0;       t_false "reject debounce=0 with action" validate_config
 set_base_config; OPT_action=monitor; OPT_debounce=0;                            t_true  "accept debounce=0 in monitor" validate_config
+
+echo "# 5D.3: automatic LAN-alias protection warns (never rejects) when no 'lan' section resolves"
+LOGCAP="$TMP/logcap"; export LOGCAP
+set_base_config; OPT_action=ifup; OPT_action_network=wg0
+unset CFG_NET_lan                         # LAN renamed/absent -> heuristic inactive
+: > "$LOGCAP"
+t_true  "no lan: valid action_network still accepted (warning is not a rejection)" validate_config
+t_true  "no lan: 'alias protection is inactive' warning is logged" grep -q "alias protection is inactive" "$LOGCAP"
+export CFG_NET_lan=br-lan                  # LAN resolves -> heuristic active, no warning
+: > "$LOGCAP"
+t_true  "lan present: valid action_network accepted" validate_config
+t_false "lan present: no alias-protection warning" grep -q "alias protection is inactive" "$LOGCAP"
+unset CFG_NET_lan; unset LOGCAP
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_action_window=60; t_false "reject action_window<300 with action" validate_config
 
 echo "# handshake tri-state"

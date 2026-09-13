@@ -25,9 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **H4:** `action=script` is confined to a root-owned, non-group/world-writable executable inside the
   package-owned `/usr/libexec/ifwatchdog.d/` (no `..`), checked via `test -O` + `find -perm` (BusyBox
   has no `stat`); the ACL description flags that write access to this package is root-equivalent.
-- **M-neu-2/M-neu-3 (concurrency):** the shared-target action lock is now an O_EXCL file create
-  (`set -C`) instead of `mkdir` — directory-creation atomicity is not honoured on every Linux
-  fs/kernel (observed broken on a dev host where O_EXCL still held). A lock older than 2 minutes is
+- **M-neu-2/M-neu-3 (concurrency):** the shared-target action lock is an O_EXCL file create
+  (`set -C`) — the POSIX atomic-create primitive, needing no cleanup beyond `rm`. A lock older than 2 minutes is
   treated as abandoned and broken once (`breaking stale lock`), so a SIGKILLed holder can no longer
   block every section sharing a tunnel forever; a failed lock is reported `lockbusy`, not as the
   breaker. `take_action` re-checks debounce **under** the lock, so two sections that both see a stall
@@ -35,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **L-neu-5:** `action_network` is validated (`valid_ifname`) **before** it is used to build the
   actions-file path, so a crafted `../../…` value can never place the state/lock file outside the
   package state dir.
+- **5D.1:** the O_EXCL lock file is cleared with `rm -f` on service start (was `rmdir`, which cannot
+  remove a regular file) — a lock left by a SIGKILLed holder no longer forces a fresh instance to
+  wait out the ~2 min stale-break before it can act after a restart.
+- **5D.2:** a service restart (every LuCI "Save & Apply") no longer wipes the circuit-breaker history:
+  the per-target `.actions` files are kept and reset only on reboot (tmpfs). Prevents an admin who
+  re-tunes during an outage from repeatedly clearing the flapping brake.
+- **5D.3:** when `action=ifup` is configured but no `lan` network resolves (e.g. LAN renamed to
+  `trusted`), a one-time warning notes that automatic alias protection is inactive and
+  `protected_networks` should cover the management network. It warns, never rejects.
 
 ### Fixed
 - **M1:** debounce and the circuit breaker now use monotonic time (`/proc/uptime`), so an NTP step at

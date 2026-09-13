@@ -46,13 +46,22 @@ tunnel is restarted.
   **policy-routing kill switch** + a simulated client on the fail-closed network. Demonstrated:
   monitor detection with no action; the denylist refuses `lan` (LAN stayed reachable);
   **stall → fail-closed network offline / router online**; ifwatchdog `ifup` → **recovery in one
-  cycle**; the circuit breaker actually prevented flapping.
+  cycle**; the circuit breaker actually prevented flapping; **two sections on one tunnel emit one
+  `ifup`**, and when the lock holder is `kill -9`ed mid-action the survivor logs `breaking stale lock`
+  exactly once and still heals the stall (`lock_tuning` picks the integer-sleep fallback because this
+  build's BusyBox `sleep` has no fractional support).
 
 ## Known limits / open questions
 - Heals **stalls**, not a genuine uplink outage (then fail-closed stays correctly offline).
-- `action=script` — **answered:** absolute + executable was **not** enough; it is now confined to a
-  root-owned, non-group/world-writable file inside the package-owned `/usr/libexec/ifwatchdog.d/`
-  (checked via `test -O` + `find -perm`, since stock BusyBox has no `stat`).
-- Is the default `max_actions=5 / 3600s` right? Should the state file survive a reboot (currently
-  `/var/run`, i.e. no — by design)?
+- Is the default `max_actions=5 / 3600 s` circuit breaker right for a **cellular** uplink, where a
+  legitimate re-handshake after a tower/NAT change may need several `ifup`s in a short window?
+- Should the breaker survive a **reboot**? Today the `.actions` state lives in `/var/run` (tmpfs) and
+  resets on reboot by design, but is kept across a service restart (a config change) since 5D.2.
+- Is the **2-minute stale-lock** threshold right for a heavily loaded router, or could a real holder
+  legitimately be paused that long (making the break premature)?
 - Suggestions for additional guards that make sense on a security device are welcome.
+
+## Not done yet (explicitly out of scope so far)
+No CI; no signed package feed; no out-of-band alerting when an instance itself stops updating
+(tracked as an issue; the alert path must not traverse the fail-closed network); no on-device UAT yet
+(the QEMU run above is the pre-UAT gate — `docs/UAT.md` is the on-device acceptance).

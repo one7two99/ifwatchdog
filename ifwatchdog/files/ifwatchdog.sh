@@ -137,6 +137,14 @@ validate_config() {
 		ifup)
 			valid_ifname "${OPT_action_network:-}" \
 				|| { log crit "action 'ifup' needs a valid 'action_network'"; return 1; }
+			# Automatic alias protection resolves network.lan.device; if the LAN
+			# section was renamed (e.g. 'trusted'/'homelan') it resolves nothing
+			# AND the name globs (lan*/mgmt*/...) miss it, so the heuristic is
+			# silently inactive. Warn once (validate_config runs once per start);
+			# do NOT refuse - a router legitimately may have no 'lan' section.
+			if [ -z "$(uci -q get network.lan.device 2>/dev/null)" ]; then
+				log warn "no 'lan' network found - automatic alias protection is inactive; verify 'protected_networks' covers your management network"
+			fi
 			if is_protected "$OPT_action_network"; then
 				log crit "refusing: 'action_network=$OPT_action_network' is protected"; return 1
 			fi ;;
@@ -263,12 +271,11 @@ lock_tuning() {
 }
 
 # Cheap mutex around the shared actions file via an O_EXCL file create ("set -C"
-# noclobber). We deliberately do NOT use mkdir: directory-creation atomicity is
-# not honoured on every Linux fs/kernel (observed broken on a dev host where
-# O_EXCL still held), while O_EXCL is the POSIX atomic-create primitive. A lock
-# older than 2 minutes cannot belong to a live holder (every path holds it for
-# milliseconds), so break it - otherwise a SIGKILLed holder stops every section
-# sharing this target forever. Do NOT tie the threshold to 'interval'.
+# noclobber): O_EXCL is the POSIX atomic-create primitive and needs no cleanup
+# semantics beyond rm. A lock older than 2 minutes cannot belong to a live holder
+# (every path holds it for milliseconds), so break it - otherwise a SIGKILLed
+# holder stops every section sharing this target forever. Do NOT tie the
+# threshold to 'interval'.
 lock_acquire() {
 	local i=0
 	while ! ( set -C; : > "$ACTIONS_FILE.lock" ) 2>/dev/null; do

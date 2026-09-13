@@ -27,11 +27,16 @@ start_instance() {
 }
 
 start_service() {
-	# Drop stale state from a previous run (renamed/removed sections, SIGKILL,
-	# and the pre-1.0 actions-file format) so the GUI never shows a dead instance
-	# as alive and the breaker starts clean.
-	rm -f /var/run/ifwatchdog/*.json /var/run/ifwatchdog/*.actions 2>/dev/null
-	rmdir /var/run/ifwatchdog/*.lock 2>/dev/null
+	# Status files are per-process and must not outlive it; the lock is an
+	# O_EXCL regular file (rm, not rmdir) that a SIGKILLed holder may leave
+	# behind. Both are cleared so the GUI never shows a dead instance as alive
+	# and a fresh start is never blocked by a stale lock.
+	# The .actions files are per-TARGET circuit-breaker state and are DELIBERATELY
+	# kept: a config change goes through restart, and wiping them here would reset
+	# the flapping brake on every "Save & Apply". Their timestamps are monotonic
+	# (valid across a restart) and entries age out via action_window; a reboot
+	# clears tmpfs, which is the one intended reset.
+	rm -f /var/run/ifwatchdog/*.json /var/run/ifwatchdog/*.lock 2>/dev/null
 	config_load ifwatchdog
 	config_foreach start_instance watchdog
 }

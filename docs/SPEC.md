@@ -118,11 +118,13 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   vanishes from the GUI.
 - **Breaker/debounce use monotonic time** (`/proc/uptime`), immune to an NTP step at boot. The actions
   file `act-<target>.actions` (shared across sections with the same target) stores `<mono> <wall>` per
-  action; wall time is display-only and the breaker deliberately resets on reboot (tmpfs).
+  action; wall time is display-only. The `.actions` files are **kept across a service restart** (a
+  config change goes through `restart`, and wiping them would reset the flapping brake on every LuCI
+  "Save & Apply"); the monotonic stamps stay valid across a restart and entries age out via
+  `action_window`. The breaker resets only on **reboot** (tmpfs is cleared), which is the intended reset.
   `debounce`/`action_window` have floors (30 s / 300 s) when an action is configured.
-- **The shared-target lock is an O_EXCL file create** (`set -C; : > act-<target>.actions.lock`), not
-  `mkdir`: directory-creation atomicity is not honoured on every Linux fs/kernel (observed broken on a
-  dev host where O_EXCL still held), while O_EXCL is the POSIX atomic-create primitive. The prune +
+- **The shared-target lock is an O_EXCL file create** (`set -C; : > act-<target>.actions.lock`):
+  O_EXCL is the POSIX atomic-create primitive and needs no cleanup semantics beyond `rm`. The prune +
   count + append run under this lock, and `take_action` re-checks debounce **under** the lock, so two
   sections seeing a stall in the same second still emit only one action. A lock older than **2 minutes**
   is treated as abandoned and broken once (`breaking stale lock`), so a SIGKILLed holder cannot block
@@ -131,7 +133,8 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   GUI-side `stale` when the status file stopped updating for `max(180 s, 3 × interval)` (scales with
   the interval so a slow instance is not flagged every poll). The status JSON carries `interval`.
   `holding`/`lockbusy` are amber ("cannot measure / retry"); `invalid`/`disabled`/`stale` are red.
-  Stale state/lock files are cleared on service start.
+  On service start the per-process **status** files and any leftover **lock** file (an O_EXCL regular
+  file, removed with `rm -f`) are cleared; the per-target `.actions` breaker files are kept (see above).
 
 ### Dependencies
 - `ping -I` → **BusyBox ping supports `-I`** (no extra package needed).
