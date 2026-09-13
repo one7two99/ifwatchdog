@@ -28,3 +28,7 @@ secrets/
 *.wgconf
 *proton*.key
 *.priv
+
+# Review work orders (internal, never public)
+word-orders/
+work-orders/
