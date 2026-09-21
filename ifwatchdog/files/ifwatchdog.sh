@@ -489,7 +489,8 @@ write_status() {
 	  "last_action": $(last_action_wall),
 	  "interval": $iv,
 	  "breaker_tripped": $bt,
-	  "updated": $(date +%s)
+	  "updated": $(date +%s),
+	  "updated_mono": $(now_mono)
 	}
 	JSON
 	chmod 0600 "$tmp" 2>/dev/null

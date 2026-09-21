@@ -9,7 +9,7 @@
 var callStatus = rpc.declare({
 	object: 'ifwatchdog',
 	method: 'status',
-	expect: { instances: [] }
+	expect: { '': { instances: [], now_mono: 0 } }
 });
 
 // Client-side mirror of the backend valid_ifname(): the first char class
@@ -23,7 +23,9 @@ function ifnameValidate(section_id, value) {
 	return true;
 }
 
-function statusTable(instances) {
+function statusTable(result) {
+	var instances = result.instances || [];
+	var nowMono = result.now_mono || 0;
 	var head = E('tr', { 'class': 'tr table-titles' }, [
 		E('th', { 'class': 'th' }, _('Section')),
 		E('th', { 'class': 'th' }, _('Interface')),
@@ -45,7 +47,13 @@ function statusTable(instances) {
 		// (SIGKILL/OOM/rename). Three missed cycles is the signal; a 180s floor
 		// avoids false staleness at short intervals on a loaded router.
 		var limit = Math.max(180, 3 * (it.interval || 60));
-		var stale = it.updated ? (nowSec - it.updated > limit) : true;
+		// Router uptime (monotonic) rather than wall clock: routers have no RTC
+		// and an NTP step at boot must not make a fresh row look stale (or a
+		// truly stale one look fresh). Falls back to wall time only for a
+		// status file written before this field existed (pre-upgrade daemon).
+		var stale = (nowMono && it.updated_mono != null)
+			? (nowMono - it.updated_mono > limit)
+			: (it.updated ? (nowSec - it.updated > limit) : true);
 		var state = stale ? _('stale (no update)') : (it.state || '-');
 		// "cannot measure" (amber) is a different class from "refused" (red).
 		// breaker_tripped is sticky: it stays true across cycles where the
@@ -203,9 +211,9 @@ return view.extend({
 		]);
 
 		poll.add(function() {
-			return callStatus().then(function(instances) {
+			return callStatus().then(function(result) {
 				var cont = document.getElementById('ifwatchdog-status');
-				if (cont) dom.content(cont, statusTable(instances));
+				if (cont) dom.content(cont, statusTable(result));
 			});
 		}, 5);
 

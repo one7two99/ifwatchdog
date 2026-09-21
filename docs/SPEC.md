@@ -134,7 +134,10 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
 - **Status states:** `alive`, `holding`, `down`, `invalid`, `disabled`, and the transient
   `debounced`/`breaker`/`lockbusy`/`acted`, plus a GUI-side `stale` when the status file stopped
   updating for `max(180 s, 3 × interval)` (scales with the interval so a slow instance is not flagged
-  every poll). The status JSON carries `interval` and a sticky `breaker_tripped` boolean (true whenever
+  every poll). Staleness is measured against the router's own monotonic clock (`updated_mono` in the
+  status JSON, `now_mono` returned by the rpcd `status` call) rather than wall time, so an NTP step at
+  boot cannot make a fresh row look stale or a truly stale one look fresh; wall time (`updated`) is a
+  fallback only. The status JSON carries `interval` and a sticky `breaker_tripped` boolean (true whenever
   the shared breaker is currently engaged for this target, independent of the current cycle's
   transient state, so a row does not look falsely healthy between down-cycles). `holding`/`lockbusy`/
   `down` are amber ("cannot measure / early warning"); `invalid`/`disabled`/`stale`/`breaker`/

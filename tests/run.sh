@@ -439,6 +439,9 @@ set_base_config; OPT_action=monitor
 write_status alive
 t_true "breaker_tripped=false in monitor mode (never trips)" grep -q '"breaker_tripped": false' "$SF"
 
+echo "# F4: status JSON carries a monotonic timestamp for GUI staleness (immune to NTP steps)"
+t_true "updated_mono present in status JSON" grep -Eq '"updated_mono": [0-9]+' "$SF"
+
 echo
 echo "==================================="
 echo "PASS=$PASS  FAIL=$FAIL"

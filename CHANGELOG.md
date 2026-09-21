@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `protected_networks` should cover the management network. It warns, never rejects.
 
 ### Fixed
+- **F4:** the GUI staleness check compared wall-clock `Date.now()` against the status JSON's `updated`
+  field only — inconsistent with the rest of the codebase's own reasoning for using monotonic time
+  (routers have no RTC and may step wall clock at NTP sync). The status JSON now also carries
+  `updated_mono` (`/proc/uptime`-based), the rpcd backend returns the router's current `now_mono`
+  alongside `instances`, and the GUI compares monotonic time when both are present (falling back to
+  wall time only for a status file written before this field existed).
 - **F9:** `breaker` and `down` now render distinctly in the GUI (red / amber) instead of falling
   through to plain neutral text identical to `alive`/`monitor`. The status JSON also carries a sticky
   `breaker_tripped` boolean, true whenever the shared circuit breaker is currently engaged for this

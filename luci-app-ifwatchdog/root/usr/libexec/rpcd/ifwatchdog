@@ -9,7 +9,10 @@ case "$1" in
 	call)
 		case "$2" in
 			status)
-				printf '{ "instances": ['
+				# now_mono lets the GUI compare staleness against the router's own
+				# monotonic clock (immune to an NTP step) instead of wall time.
+				now_mono=$(awk '{ printf "%d\n", $1; exit }' /proc/uptime 2>/dev/null)
+				printf '{ "now_mono": %s, "instances": [' "${now_mono:-0}"
 				first=1
 				for f in /var/run/ifwatchdog/*.json; do
 					[ -f "$f" ] || continue
