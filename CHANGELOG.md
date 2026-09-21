@@ -51,6 +51,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `trusted`), a one-time warning notes that automatic alias protection is inactive and
   `protected_networks` should cover the management network. It warns, never rejects.
 
+### Fixed (ultrareview of the review-01 changes themselves)
+- **Regression:** the review-01 nits accidentally swapped `interval`/`max_actions`'s LuCI datatype from
+  `uinteger` to `min(5)`/`range(1,100)`, which validate as floats — a value like `interval=5.5` now
+  passed client-side validation and saved, only to be rejected by the backend's integer-only
+  `valid_uint()` at daemon start (invisible in the GUI, only in syslog). Now `and(uinteger,min(5))` /
+  `and(uinteger,range(1,100))`, keeping the integer requirement.
+- **Race:** `run_action_script()` backgrounds the action script, then backgrounds its timeout watchdog
+  — so by the time `cleanup()`'s SIGTERM/SIGINT trap can fire during a script action, `$!` refers to the
+  watchdog, not the script. A service stop/restart mid-action previously killed only the watchdog,
+  leaving the configured script running fully detached and unbounded. `cleanup()` now tracks and kills
+  the actual script PID (and its watchdog) when one is in flight.
+- **Found during live re-verification of the race fix above:** killing only the action script's own PID
+  is not enough — a script's trailing simple command (e.g. a plain `sleep N`) is forked, not exec'd, by
+  BusyBox ash, so it survived as an orphan (reparented to init) even after the script itself was killed;
+  confirmed live in the QEMU test VM. Both the `SCRIPT_TIMEOUT` watchdog and `cleanup()` now use a new
+  `kill_tree()` that recursively kills a script's descendants too (best-effort via `pgrep -P`).
+- The handshake probe's *displayed* `handshake_age` was still a raw wall-clock diff even though F6 made
+  the fresh/stale *decision* monotonic — after the exact NTP-step scenario F6 targets, the GUI could
+  show a huge/contradictory age next to a `fresh` state. The displayed age is now derived from the same
+  monotonic clock as the decision, so the two can never disagree.
+- Deduplicated the protected-pattern glob-match loop (previously written out independently three times
+  across `is_protected()`/`protected_device_exists()`) into a shared `name_matches_protected()` helper.
+
 ### Fixed
 - **Nits:** the backgrounded check-loop `sleep` is now killed in `cleanup()` on shutdown instead of
   lingering as a harmless orphan until its own timeout elapses; `FAIL_COUNT` is no longer reset after a

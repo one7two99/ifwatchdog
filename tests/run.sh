@@ -251,6 +251,11 @@ handshake_probe; t_eq fresh "$HS_STATE" "same value, 1st sight: fresh (matches a
 # against the still-fixed WG_HS would keep reporting ~10s (fresh) forever.
 HS_LAST_SEEN_MONO=$(( $(now_mono) - 500 ))
 handshake_probe; t_eq stale "$HS_STATE" "same value, monotonic time elapsed past max_age: stale (not re-derived from wall clock)"
+# HS_AGE (displayed) and HS_STATE (decision) must never disagree: a naive
+# wall-clock diff against the still-fixed WG_HS would show ~10s here, openly
+# contradicting the 'stale' state above.
+if [ "$HS_AGE" -gt "$OPT_max_handshake_age" ]; then ok "displayed HS_AGE ($HS_AGE) agrees with HS_STATE=stale, not the wall-clock ~10s"
+else no "displayed HS_AGE ($HS_AGE) agrees with HS_STATE=stale (got HS_AGE=$HS_AGE)"; fi
 # A genuinely NEW handshake (different value) re-anchors and is fresh again.
 WG_HS=$((now-5)); export WG_HS
 handshake_probe; t_eq fresh "$HS_STATE" "a new handshake value re-anchors to fresh"
@@ -410,9 +415,17 @@ t_eq KEPT "$esc" "a valid action_network is preserved for the path"
 
 echo "# F8: a hung action script cannot block the check loop forever"
 mkdir -p "$TMP/sdir2"
-cat > "$TMP/sdir2/hang.sh" <<'HANG'
+rm -f "$TMP/sdir2/child.pid"
+# The script explicitly forks a child (rather than relying on a shell's
+# tail-call exec of a trailing simple command, which some shells - e.g. the
+# host's dash, unlike the target's BusyBox ash - optimise away into the SAME
+# pid) so this test exercises kill_tree()'s recursion regardless of host
+# shell quirks: killing only the script's own pid must not be enough here.
+cat > "$TMP/sdir2/hang.sh" <<HANG
 #!/bin/sh
-sleep 60
+sleep 60 &
+echo \$! > "$TMP/sdir2/child.pid"
+wait
 HANG
 chmod 0755 "$TMP/sdir2/hang.sh"
 set_base_config; OPT_action=script; OPT_script="$TMP/sdir2/hang.sh"
@@ -424,7 +437,25 @@ t_true "hung script is killed well before its own sleep would return" [ $(( t1 -
 # the killed script must not linger as an orphan
 sleep 1
 t_false "hung script process no longer running after the timeout" pgrep -f "$TMP/sdir2/hang.sh"
+child_pid="$(cat "$TMP/sdir2/child.pid" 2>/dev/null)"
+t_true "hang.sh actually forked a child (test setup sanity check)" [ -n "$child_pid" ]
+t_false "kill_tree also kills the child the script forked (not left as an orphan)" kill -0 "$child_pid" 2>/dev/null
 SCRIPT_TIMEOUT=60
+
+echo "# nit: cleanup() kills the actual in-flight action script, not just its timeout watchdog"
+set_base_config
+sleep 5 & real_script_pid=$!
+sleep 5 & real_watchdog_pid=$!
+( SCRIPT_PID=$real_script_pid; SCRIPT_WATCHDOG_PID=$real_watchdog_pid; cleanup ) >/dev/null 2>&1
+sleep 0.3
+t_false "cleanup kills the in-flight script (not left running detached)" kill -0 "$real_script_pid" 2>/dev/null
+t_false "cleanup also kills the script's own timeout watchdog" kill -0 "$real_watchdog_pid" 2>/dev/null
+# Without a script action in flight, cleanup() must still fall back to
+# killing '$!' (the main loop's interruptible sleep).
+sleep 5 & idle_sleep_pid=$!
+( SCRIPT_PID=""; cleanup ) >/dev/null 2>&1
+sleep 0.3
+t_false "cleanup falls back to \$! when no script action is in flight" kill -0 "$idle_sleep_pid" 2>/dev/null
 
 echo "# low-severity hardening"
 IFWATCHDOG_TEST=0 sh "$SCRIPT" 'bad;name' >/dev/null 2>&1; t_eq 2 "$?" "invalid section name exits 2"
