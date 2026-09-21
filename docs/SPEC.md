@@ -111,7 +111,10 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   ("cannot measure": wg missing, non-WG/absent interface, no handshake yet, clock step) never drives
   an action, and with `method=handshake` the instance holds — the loop then writes `state=holding`
   (not `alive`) and keeps the failure counter, so a hold is never reported as measured health. The
-  status JSON carries `handshake_state`.
+  status JSON carries `handshake_state`. Freshness is judged on **monotonic** time elapsed since the
+  current handshake value was first observed (seeded from the wall-clock age at that first sight), not
+  a wall-clock diff recomputed every cycle — a later NTP step can no longer flip a persisting value's
+  classification either way.
 - **`action=script` is confined** to a root-owned, non-group/world-writable executable inside
   `/usr/libexec/ifwatchdog.d/` (no `..`). Ownership/permissions are checked with `test -O` + `find`
   (stock BusyBox has no `stat`). Write access to the UCI package is root-equivalent by design.

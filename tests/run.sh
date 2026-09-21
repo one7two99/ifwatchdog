@@ -234,6 +234,21 @@ WG_FAIL=1; export WG_FAIL
 handshake_probe; t_eq unknown "$HS_STATE" "wg error (iface not found) -> HS_STATE=unknown"
 unset WG_FAIL
 
+echo "# F6: staleness tracks MONOTONIC time since first-seen, not a wall-clock recompute every call"
+set_base_config; OPT_method=handshake; OPT_max_handshake_age=150
+unset HS_LAST_SEEN_LATEST HS_LAST_SEEN_MONO
+WG_HS=$((now-10)); export WG_HS
+handshake_probe; t_eq fresh "$HS_STATE" "same value, 1st sight: fresh (matches a plain wall-clock diff)"
+# Simulate 500 monotonic seconds passing with the SAME handshake value (e.g.
+# the tunnel is idle within its keepalive window) - a naive wall-clock diff
+# against the still-fixed WG_HS would keep reporting ~10s (fresh) forever.
+HS_LAST_SEEN_MONO=$(( $(now_mono) - 500 ))
+handshake_probe; t_eq stale "$HS_STATE" "same value, monotonic time elapsed past max_age: stale (not re-derived from wall clock)"
+# A genuinely NEW handshake (different value) re-anchors and is fresh again.
+WG_HS=$((now-5)); export WG_HS
+handshake_probe; t_eq fresh "$HS_STATE" "a new handshake value re-anchors to fresh"
+unset HS_LAST_SEEN_LATEST HS_LAST_SEEN_MONO
+
 echo "# no action under uncertainty"
 set_base_config; OPT_method=handshake; OPT_action=ifup; OPT_action_network=wg0
 WG_HS=0; export WG_HS

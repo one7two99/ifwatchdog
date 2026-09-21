@@ -249,22 +249,37 @@ validate_config() {
 # Sets HS_AGE (seconds, may be empty) and HS_STATE (fresh|stale|unknown).
 # 'unknown' = "cannot measure" (wg missing, not a wg iface, iface absent, peer
 # never handshaked, clock stepped) and must NEVER drive an action.
+#
+# Staleness is decided on MONOTONIC time elapsed since we first observed the
+# CURRENT 'latest' value (HS_LAST_SEEN_MONO), not on a wall-clock diff against
+# it: 'wg show' reports a wall-clock epoch, and a wall-clock step (no RTC, NTP
+# sync at/after boot) could otherwise make a genuinely fresh handshake register
+# as stale, or vice versa, for no real reason (F6). The monotonic origin is
+# seeded from the wall-clock age at first sight, so the INITIAL classification
+# of a never-before-seen value still matches a plain wall-clock diff exactly;
+# only a value that PERSISTS across a later clock step stays correctly judged.
 handshake_probe() {
 	HS_AGE=""
 	HS_STATE=unknown
 	command -v wg >/dev/null 2>&1 || return 0
-	local out now latest
+	local out now latest nowm
 	out="$(wg show "$OPT_interface" latest-handshakes 2>/dev/null)" || return 0
 	[ -n "$out" ] || return 0
 	latest="$(printf '%s\n' "$out" | awk '{ if ($2+0 > m) m=$2 } END { print m+0 }')"
 	[ "$latest" -gt 0 ] 2>/dev/null || return 0      # peer never handshaked yet
 	now="$(date +%s)"
 	HS_AGE=$(( now - latest ))
-	if [ "$HS_AGE" -lt 0 ]; then                      # clock stepped backwards / future stamp
-		HS_AGE=""
-		return 0
+	if [ "$HS_AGE" -lt 0 ]; then                      # clock stepped backwards / future stamp:
+		HS_AGE=""                                     # cannot measure at all -> stay 'unknown',
+		return 0                                      # do NOT guess via the monotonic anchor.
 	fi
-	if [ "$HS_AGE" -le "$OPT_max_handshake_age" ]; then
+	nowm="$(now_mono)"
+	: "${HS_LAST_SEEN_LATEST:=}"; : "${HS_LAST_SEEN_MONO:=0}"
+	if [ "$latest" != "$HS_LAST_SEEN_LATEST" ]; then
+		HS_LAST_SEEN_LATEST="$latest"
+		HS_LAST_SEEN_MONO=$(( nowm - HS_AGE ))
+	fi
+	if [ $(( nowm - HS_LAST_SEEN_MONO )) -le "$OPT_max_handshake_age" ]; then
 		HS_STATE=fresh
 	else
 		HS_STATE=stale
@@ -533,6 +548,7 @@ main() {
 	trap cleanup INT TERM
 	lock_tuning
 	HS_AGE=""; HS_STATE=n/a; PING_RES="n/a"; FAIL_COUNT=0; HS_UNKNOWN_LOGGED=0; BREAKER_LOGGED=0; HOLDING=0
+	HS_LAST_SEEN_LATEST=""; HS_LAST_SEEN_MONO=0
 
 	# Fail-safe invariant: only SIGTERM/SIGINT may exit. Every "cannot work"
 	# condition writes a status file and idles, so the GUI still lists it.

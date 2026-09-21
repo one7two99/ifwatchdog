@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `protected_networks` should cover the management network. It warns, never rejects.
 
 ### Fixed
+- **F6:** handshake freshness is now judged on monotonic time elapsed since the current handshake
+  value was first observed, not a wall-clock diff recomputed against `wg show`'s reported epoch every
+  cycle — a wall-clock step shortly after boot (no RTC) could otherwise flip a persisting handshake's
+  classification either way for no real reason. The monotonic origin is seeded from the wall-clock age
+  at first sight, so the initial classification of a never-before-seen value is unchanged; `method=both`
+  mitigated most practical impact via the ping fallback, but this closes the gap directly.
 - **F5:** `last_action_mono`/`last_action_wall` now always print a number, even against an empty or
   blank-trailing-line actions file (e.g. right after pruning empties it) — the previous bare
   pattern-action `awk` printed nothing for such input, which made a caller's `[ "$last_m" -gt 0 ]`
