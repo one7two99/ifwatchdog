@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `protected_networks` should cover the management network. It warns, never rejects.
 
 ### Fixed
+- **F5:** `last_action_mono`/`last_action_wall` now always print a number, even against an empty or
+  blank-trailing-line actions file (e.g. right after pruning empties it) — the previous bare
+  pattern-action `awk` printed nothing for such input, which made a caller's `[ "$last_m" -gt 0 ]`
+  fail with a raw shell "integer expression expected" error instead of the intended "no prior action"
+  result. The rpcd `status` backend also skips any per-instance file that fails a `jsonfilter`
+  validity check instead of `cat`-ing it unconditionally into the aggregated response.
 - **F4:** the GUI staleness check compared wall-clock `Date.now()` against the status JSON's `updated`
   field only — inconsistent with the rest of the codebase's own reasoning for using monotonic time
   (routers have no RTC and may step wall clock at NTP sync). The status JSON now also carries

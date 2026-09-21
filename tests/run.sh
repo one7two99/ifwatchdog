@@ -442,6 +442,18 @@ t_true "breaker_tripped=false in monitor mode (never trips)" grep -q '"breaker_t
 echo "# F4: status JSON carries a monotonic timestamp for GUI staleness (immune to NTP steps)"
 t_true "updated_mono present in status JSON" grep -Eq '"updated_mono": [0-9]+' "$SF"
 
+echo "# F5: last_action_mono/wall stay numeric against an empty or blank actions file"
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=5; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-empty.actions"
+: > "$ACTIONS_FILE"                       # 0 bytes, e.g. right after prune_actions_file empties it
+t_eq 0 "$(last_action_mono)" "last_action_mono is numeric 0 on an empty file"
+t_eq 0 "$(last_action_wall)" "last_action_wall is numeric 0 on an empty file"
+printf '\n' > "$ACTIONS_FILE"             # blank trailing line, no fields
+t_eq 0 "$(last_action_mono)" "last_action_mono is numeric 0 on a blank-line file"
+: > "$IFUP_LOG"; take_action              # must not error out / must still act (no valid last action)
+t_eq acted "$ACTION_OUTCOME" "take_action still acts against an empty actions file"
+rm -f "$ACTIONS_FILE"
+
 echo
 echo "==================================="
 echo "PASS=$PASS  FAIL=$FAIL"

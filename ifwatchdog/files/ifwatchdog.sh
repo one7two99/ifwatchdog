@@ -349,13 +349,17 @@ lock_release() { rm -f "$ACTIONS_FILE.lock"; }
 
 # Last recorded action: monotonic seconds (debounce) / wall seconds (display).
 # Actions file line format is "<mono> <wall>".
+# awk's END block always fires (even on zero/blank input), so these always
+# print a number - unlike a bare pattern-action, which prints nothing for an
+# empty or blank-trailing-line file (e.g. right after prune_actions_file
+# empties it), which would otherwise make a caller's '[ "$x" -gt 0 ]' error out.
 last_action_mono() {
 	[ -f "$ACTIONS_FILE" ] || { echo 0; return; }
-	tail -n1 "$ACTIONS_FILE" 2>/dev/null | awk '{ print $1+0 }'
+	tail -n1 "$ACTIONS_FILE" 2>/dev/null | awk '{ v=$1+0 } END { print v+0 }'
 }
 last_action_wall() {
 	[ -f "$ACTIONS_FILE" ] || { echo 0; return; }
-	tail -n1 "$ACTIONS_FILE" 2>/dev/null | awk '{ print $2+0 }'
+	tail -n1 "$ACTIONS_FILE" 2>/dev/null | awk '{ v=$2+0 } END { print v+0 }'
 }
 
 # Caps the shared actions file at this many lines regardless of any single

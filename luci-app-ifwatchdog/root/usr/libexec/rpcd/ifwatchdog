@@ -16,6 +16,10 @@ case "$1" in
 				first=1
 				for f in /var/run/ifwatchdog/*.json; do
 					[ -f "$f" ] || continue
+					# Skip a file that isn't valid JSON (e.g. torn by a crash mid-write,
+					# though write_status()'s tmp+mv is already atomic) rather than
+					# feeding the GUI's JSON.parse a string that breaks the whole call.
+					jsonfilter -i "$f" -e '@' >/dev/null 2>&1 || continue
 					[ "$first" = 1 ] || printf ','
 					cat "$f"
 					first=0
