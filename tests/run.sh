@@ -415,9 +415,17 @@ t_eq KEPT "$esc" "a valid action_network is preserved for the path"
 
 echo "# F8: a hung action script cannot block the check loop forever"
 mkdir -p "$TMP/sdir2"
-cat > "$TMP/sdir2/hang.sh" <<'HANG'
+rm -f "$TMP/sdir2/child.pid"
+# The script explicitly forks a child (rather than relying on a shell's
+# tail-call exec of a trailing simple command, which some shells - e.g. the
+# host's dash, unlike the target's BusyBox ash - optimise away into the SAME
+# pid) so this test exercises kill_tree()'s recursion regardless of host
+# shell quirks: killing only the script's own pid must not be enough here.
+cat > "$TMP/sdir2/hang.sh" <<HANG
 #!/bin/sh
-sleep 60
+sleep 60 &
+echo \$! > "$TMP/sdir2/child.pid"
+wait
 HANG
 chmod 0755 "$TMP/sdir2/hang.sh"
 set_base_config; OPT_action=script; OPT_script="$TMP/sdir2/hang.sh"
@@ -429,6 +437,9 @@ t_true "hung script is killed well before its own sleep would return" [ $(( t1 -
 # the killed script must not linger as an orphan
 sleep 1
 t_false "hung script process no longer running after the timeout" pgrep -f "$TMP/sdir2/hang.sh"
+child_pid="$(cat "$TMP/sdir2/child.pid" 2>/dev/null)"
+t_true "hang.sh actually forked a child (test setup sanity check)" [ -n "$child_pid" ]
+t_false "kill_tree also kills the child the script forked (not left as an orphan)" kill -0 "$child_pid" 2>/dev/null
 SCRIPT_TIMEOUT=60
 
 echo "# nit: cleanup() kills the actual in-flight action script, not just its timeout watchdog"

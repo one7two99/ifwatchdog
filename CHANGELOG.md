@@ -62,6 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   watchdog, not the script. A service stop/restart mid-action previously killed only the watchdog,
   leaving the configured script running fully detached and unbounded. `cleanup()` now tracks and kills
   the actual script PID (and its watchdog) when one is in flight.
+- **Found during live re-verification of the race fix above:** killing only the action script's own PID
+  is not enough — a script's trailing simple command (e.g. a plain `sleep N`) is forked, not exec'd, by
+  BusyBox ash, so it survived as an orphan (reparented to init) even after the script itself was killed;
+  confirmed live in the QEMU test VM. Both the `SCRIPT_TIMEOUT` watchdog and `cleanup()` now use a new
+  `kill_tree()` that recursively kills a script's descendants too (best-effort via `pgrep -P`).
 - The handshake probe's *displayed* `handshake_age` was still a raw wall-clock diff even though F6 made
   the fresh/stale *decision* monotonic — after the exact NTP-step scenario F6 targets, the GUI could
   show a huge/contradictory age next to a `fresh` state. The displayed age is now derived from the same

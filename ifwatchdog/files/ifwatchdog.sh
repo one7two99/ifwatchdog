@@ -419,6 +419,23 @@ recent_action_count() {
 	awk -v c="$cut" '$1+0 >= c { n++ } END { print n+0 }' "$ACTIONS_FILE" 2>/dev/null
 }
 
+# Kills $1 and every descendant process (best-effort). A script's last
+# statement (e.g. a plain 'sleep N') is typically forked, not exec'd, by ash -
+# killing only the script's own PID would leave such a child running as an
+# orphan (reparented to init) for the rest of its own lifetime, regardless of
+# SCRIPT_TIMEOUT or a service stop. Falls back to a plain single-PID kill if
+# 'pgrep -P' (BusyBox applet, confirmed present on the QEMU test target) is
+# unavailable - best-effort, not a hard requirement.
+kill_tree() {
+	local pid="$1" child
+	if command -v pgrep >/dev/null 2>&1; then
+		for child in $(pgrep -P "$pid" 2>/dev/null); do
+			kill_tree "$child"
+		done
+	fi
+	kill -9 "$pid" 2>/dev/null
+}
+
 # Runs the configured action script with a SCRIPT_TIMEOUT-second bound.
 # BusyBox on the target has no 'timeout' applet, so this is a portable
 # background-process + kill pattern instead (F8): a hung/buggy script can no
@@ -431,7 +448,7 @@ run_action_script() {
 	local rc
 	"$OPT_script" "$SECTION" "$OPT_interface" "${OPT_action_network:-}" </dev/null &
 	SCRIPT_PID=$!
-	( sleep "$SCRIPT_TIMEOUT" 2>/dev/null; kill -9 "$SCRIPT_PID" 2>/dev/null ) &
+	( sleep "$SCRIPT_TIMEOUT" 2>/dev/null; kill_tree "$SCRIPT_PID" ) &
 	SCRIPT_WATCHDOG_PID=$!
 	wait "$SCRIPT_PID" 2>/dev/null; rc=$?
 	kill "$SCRIPT_WATCHDOG_PID" 2>/dev/null; wait "$SCRIPT_WATCHDOG_PID" 2>/dev/null
@@ -570,8 +587,9 @@ cleanup() {
 		# An action script is in flight: '$!' now refers to its timeout
 		# watchdog (backgrounded after the script in run_action_script), not
 		# the script itself, so a bare 'kill "$!"' here would leave the
-		# script running fully detached and unbounded. Kill both explicitly.
-		kill "$SCRIPT_PID" 2>/dev/null
+		# script running fully detached and unbounded. kill_tree also catches
+		# any child the script itself forked (e.g. a trailing 'sleep N').
+		kill_tree "$SCRIPT_PID"
 		kill "${SCRIPT_WATCHDOG_PID:-}" 2>/dev/null
 	else
 		# '$!' refers to the backgrounded sleep interrupted by the signal
