@@ -436,6 +436,13 @@ run_action_script() {
 	[ "$rc" -eq 0 ] || log warn "action script '$OPT_script' exited non-zero or was killed after ${SCRIPT_TIMEOUT}s (rc=$rc)"
 }
 
+# lockbusy is transient lock contention, not a deliberate policy hold like
+# debounce/breaker - the failure counter should keep counting so a legitimate
+# action is not delayed past 'failures' cycles by bad luck on lock timing.
+should_reset_fail_count() {
+	[ "$1" != lockbusy ]
+}
+
 # Performs the configured action, honouring debounce + circuit breaker on
 # monotonic time. The breaker file is keyed on the target network (see main()),
 # so sections sharing a target share one counter; the prune+count+append is
@@ -556,6 +563,10 @@ safe_idle() { while :; do sleep 3600 & wait "$!"; done; }
 # drop the stale status file so the GUI no longer lists this instance.
 cleanup() {
 	log info "stopping (interface=${OPT_interface:-?})"
+	# '$!' still refers to the backgrounded sleep interrupted by the signal
+	# (main loop / safe_idle both background their sleep and 'wait "$!"'); it
+	# would otherwise linger as an orphan until its own timeout elapses.
+	kill "$!" 2>/dev/null
 	rm -f "$STATE_DIR/$SECTION.json" 2>/dev/null
 	[ -n "${ACTIONS_FILE:-}" ] && rm -f "${ACTIONS_FILE}.lock"
 	exit 0
@@ -632,12 +643,13 @@ main() {
 				if [ "$OPT_action" = monitor ]; then
 					log warn "MONITOR: threshold reached on '$OPT_interface' - would act (no-op)"
 					write_status monitor
+					FAIL_COUNT=0
 				else
 					ACTION_OUTCOME=acted
 					take_action
 					write_status "$ACTION_OUTCOME"
+					should_reset_fail_count "$ACTION_OUTCOME" && FAIL_COUNT=0
 				fi
-				FAIL_COUNT=0
 			else
 				write_status down
 			fi

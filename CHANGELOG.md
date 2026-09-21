@@ -52,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `protected_networks` should cover the management network. It warns, never rejects.
 
 ### Fixed
+- **Nits:** the backgrounded check-loop `sleep` is now killed in `cleanup()` on shutdown instead of
+  lingering as a harmless orphan until its own timeout elapses; `FAIL_COUNT` is no longer reset after a
+  `lockbusy` outcome (transient lock contention, unlike the deliberate `debounced`/`breaker` holds), so
+  a legitimate action is not delayed past `failures` cycles by bad luck on lock timing; the LuCI form
+  now validates `debounce`/`action_window`/`max_handshake_age` against their conditional backend floors
+  (only once an action/method that needs them is selected, so a valid monitor-mode `debounce=0` is
+  still accepted) and caps `max_actions` at 1-100 to match the backend. `ping_host`'s datatype stays
+  `'host'` (a reviewed suggestion to tighten it to `'ipaddr'` was rejected — the backend's `valid_host`
+  intentionally also accepts hostnames).
 - **F8:** `action=script` now runs under a 60 s bound (`run_action_script`, a portable
   background-process + `kill` pattern — the target BusyBox build has no `timeout` applet) — a
   hung/buggy custom script could previously block that section's entire check loop (no more checks,

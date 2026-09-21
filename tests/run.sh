@@ -395,6 +395,12 @@ t_eq lockbusy "$ACTION_OUTCOME" "held fresh lock -> take_action reports lockbusy
 t_eq 0 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "held fresh lock -> no ifup while locked"
 rm -f "$ACTIONS_FILE.lock"
 
+echo "# nit: FAIL_COUNT survives a lockbusy outcome (transient contention, not a policy hold)"
+t_false "should_reset_fail_count lockbusy -> false" should_reset_fail_count lockbusy
+t_true  "should_reset_fail_count debounced -> true" should_reset_fail_count debounced
+t_true  "should_reset_fail_count breaker -> true"   should_reset_fail_count breaker
+t_true  "should_reset_fail_count acted -> true"     should_reset_fail_count acted
+
 echo "# an action_network that tries to escape the state dir cannot build a path outside it (5A.5)"
 esc_network(){ n="$1"; valid_ifname "${n:-}" || n=""; printf '%s' "$TMP/state/act-${n:-SEC}.actions"; }
 case "$(esc_network '../../tmp/x')" in *..*) esc=OUTSIDE ;; *) esc=INSIDE ;; esac

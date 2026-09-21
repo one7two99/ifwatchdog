@@ -23,6 +23,24 @@ function ifnameValidate(section_id, value) {
 	return true;
 }
 
+// The backend only enforces a floor conditionally (e.g. debounce/action_window
+// only once an action is configured; max_handshake_age only for method
+// handshake/both) - mirror that here instead of a flat datatype minimum,
+// which would wrongly reject e.g. a valid monitor-mode debounce=0.
+function conditionalFloorValidate(fieldName, triggerValues, min) {
+	return function(section_id, value) {
+		var opt = this.map.lookupOption(fieldName, section_id);
+		var current = opt ? opt[0].formvalue(section_id) : triggerValues[0];
+		if (triggerValues.indexOf(current) === -1 || value === '' || value == null)
+			return true;
+		return (+value >= min) ? true
+			: _('Must be >= %d when %s is %s.').format(min, fieldName, current);
+	};
+}
+function actionFloorValidate(min) {
+	return conditionalFloorValidate('action', ['ifup', 'script'], min);
+}
+
 function statusTable(result) {
 	var instances = result.instances || [];
 	var nowMono = result.now_mono || 0;
@@ -149,8 +167,10 @@ return view.extend({
 
 		o = s.option(form.Value, 'max_handshake_age', _('Max handshake age (s)'),
 			_('If the last WireGuard handshake is older than this, the tunnel counts as ' +
-			  'stalled (methods "handshake" and "both").'));
+			  'stalled (methods "handshake" and "both"). Must be >= 30 for those methods - below the ' +
+			  'default WireGuard keepalive cadence, a healthy tunnel would look stalled between beats.'));
 		o.modalonly = true;
+		o.validate = conditionalFloorValidate('method', ['handshake', 'both'], 30);
 		o.datatype = 'uinteger';
 		o.default = '150';
 		o.depends('method', 'handshake');
@@ -158,7 +178,7 @@ return view.extend({
 
 		o = s.option(form.Value, 'interval', _('Check interval (s)'),
 			_('Seconds between checks.'));
-		o.modalonly = true; o.datatype = 'uinteger'; o.default = '60';
+		o.modalonly = true; o.datatype = 'min(5)'; o.default = '60';
 
 		o = s.option(form.Value, 'failures', _('Failures before action'),
 			_('Number of consecutive failed checks before the action is taken.'));
@@ -183,16 +203,20 @@ return view.extend({
 		o.placeholder = '/usr/libexec/ifwatchdog.d/my-action.sh';
 
 		o = s.option(form.Value, 'debounce', _('Debounce (s)'),
-			_('Minimum seconds between two actions — prevents rapid repeats.'));
+			_('Minimum seconds between two actions — prevents rapid repeats. Must be >= 30 once an ' +
+			  'action other than "monitor" is configured.'));
 		o.modalonly = true; o.datatype = 'uinteger'; o.default = '120';
+		o.validate = actionFloorValidate(30);
 
 		o = s.option(form.Value, 'max_actions', _('Max actions per window'),
-			_('Circuit breaker: maximum number of actions allowed within the action window.'));
-		o.modalonly = true; o.datatype = 'uinteger'; o.default = '5';
+			_('Circuit breaker: maximum number of actions allowed within the action window (1-100).'));
+		o.modalonly = true; o.datatype = 'range(1,100)'; o.default = '5';
 
 		o = s.option(form.Value, 'action_window', _('Action window (s)'),
-			_('Length of the circuit-breaker window, in seconds.'));
+			_('Length of the circuit-breaker window, in seconds. Must be >= 300 once an action other ' +
+			  'than "monitor" is configured.'));
 		o.modalonly = true; o.datatype = 'uinteger'; o.default = '3600';
+		o.validate = actionFloorValidate(300);
 
 		o = s.option(form.DynamicList, 'protected_networks', _('Extra protected networks'),
 			_('Networks that must never be restarted, in addition to lan/loopback. ' +
