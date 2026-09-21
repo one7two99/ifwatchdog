@@ -452,14 +452,29 @@ json_str() {
 	esac
 }
 
+# True if the shared breaker for this target is CURRENTLY tripped (>=
+# max_actions within the window), independent of whether this cycle itself
+# attempted an action. Feeds the GUI's sticky 'breaker_tripped' indicator, so
+# a row does not look falsely healthy between down-cycles while the breaker
+# is still engaged. Fails safe (false) on any missing/invalid input.
+breaker_is_tripped() {
+	case "${OPT_action:-monitor}" in monitor|'') return 1 ;; esac
+	valid_uint "${OPT_max_actions:-}" || return 1
+	local cnt
+	cnt="$(recent_action_count "$(now_mono)" 2>/dev/null)"
+	valid_uint "${cnt:-}" || return 1
+	[ "$cnt" -ge "$OPT_max_actions" ]
+}
+
 write_status() {
-	local state="$1" f tmp age iv
+	local state="$1" f tmp age iv bt
 	mkdir -p "$STATE_DIR" 2>/dev/null
 	f="$STATE_DIR/$SECTION.json"
 	tmp="$f.$$"
 	case "${HS_AGE:-}" in ''|*[!0-9]*) age=null ;; *) age="$HS_AGE" ;; esac
 	# interval drives the GUI staleness threshold; unvalidated on the invalid path.
 	case "${OPT_interval:-}" in ''|*[!0-9]*) iv=null ;; *) iv="$OPT_interval" ;; esac
+	bt=false; breaker_is_tripped && bt=true
 	cat > "$tmp" <<-JSON
 	{
 	  "section": "$(json_str "$SECTION")",
@@ -473,6 +488,7 @@ write_status() {
 	  "fail_count": ${FAIL_COUNT:-0},
 	  "last_action": $(last_action_wall),
 	  "interval": $iv,
+	  "breaker_tripped": $bt,
 	  "updated": $(date +%s)
 	}
 	JSON

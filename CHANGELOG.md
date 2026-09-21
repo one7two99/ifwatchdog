@@ -52,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `protected_networks` should cover the management network. It warns, never rejects.
 
 ### Fixed
+- **F9:** `breaker` and `down` now render distinctly in the GUI (red / amber) instead of falling
+  through to plain neutral text identical to `alive`/`monitor`. The status JSON also carries a sticky
+  `breaker_tripped` boolean, true whenever the shared circuit breaker is currently engaged for this
+  target regardless of the current cycle's transient state, so a row does not look falsely healthy in
+  the gap between down-cycles while the breaker is still refusing actions.
 - **F2:** `recent_action_count` no longer prunes the shared per-target actions file by the *calling*
   section's own `action_window` — two sections watching the same target with different windows (e.g.
   300 s vs 3600 s, an explicitly supported multi-instance setup) could otherwise have the shorter-window

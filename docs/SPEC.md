@@ -131,10 +131,14 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   sections seeing a stall in the same second still emit only one action. A lock older than **2 minutes**
   is treated as abandoned and broken once (`breaking stale lock`), so a SIGKILLed holder cannot block
   the shared target forever; a lock that cannot be taken is reported `lockbusy` (not the breaker).
-- **Status states:** `alive`, `holding`, `invalid`, `disabled`, and the transient `lockbusy`, plus a
-  GUI-side `stale` when the status file stopped updating for `max(180 s, 3 × interval)` (scales with
-  the interval so a slow instance is not flagged every poll). The status JSON carries `interval`.
-  `holding`/`lockbusy` are amber ("cannot measure / retry"); `invalid`/`disabled`/`stale` are red.
+- **Status states:** `alive`, `holding`, `down`, `invalid`, `disabled`, and the transient
+  `debounced`/`breaker`/`lockbusy`/`acted`, plus a GUI-side `stale` when the status file stopped
+  updating for `max(180 s, 3 × interval)` (scales with the interval so a slow instance is not flagged
+  every poll). The status JSON carries `interval` and a sticky `breaker_tripped` boolean (true whenever
+  the shared breaker is currently engaged for this target, independent of the current cycle's
+  transient state, so a row does not look falsely healthy between down-cycles). `holding`/`lockbusy`/
+  `down` are amber ("cannot measure / early warning"); `invalid`/`disabled`/`stale`/`breaker`/
+  `breaker_tripped` are red.
   On service start the per-process **status** files and any leftover **lock** file (an O_EXCL regular
   file, removed with `rm -f`) are cleared; the per-target `.actions` breaker files are kept (see above).
 

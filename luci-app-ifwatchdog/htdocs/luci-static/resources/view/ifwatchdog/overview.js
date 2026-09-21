@@ -48,8 +48,11 @@ function statusTable(instances) {
 		var stale = it.updated ? (nowSec - it.updated > limit) : true;
 		var state = stale ? _('stale (no update)') : (it.state || '-');
 		// "cannot measure" (amber) is a different class from "refused" (red).
-		var hard  = stale || state == 'invalid' || state == 'disabled';
-		var soft  = state == 'holding' || state == 'lockbusy';
+		// breaker_tripped is sticky: it stays true across cycles where the
+		// breaker is engaged even if THIS cycle's transient state looks benign.
+		var hard  = stale || state == 'invalid' || state == 'disabled' ||
+		            state == 'breaker' || it.breaker_tripped;
+		var soft  = state == 'holding' || state == 'lockbusy' || state == 'down';
 		var stateCell = hard
 			? E('strong', { 'style': 'color:#a00' }, state)
 			: (soft ? E('strong', { 'style': 'color:#a60' }, state)

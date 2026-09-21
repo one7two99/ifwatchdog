@@ -423,6 +423,22 @@ else
 	no "status JSON written"
 fi
 
+echo "# F9: breaker_tripped is sticky - true even when the current cycle's transient state looks healthy"
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=1; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null
+nowm=$(now_mono); echo "$nowm $(date +%s)" > "$ACTIONS_FILE"   # 1 recorded action -> breaker tripped (max_actions=1)
+HS_AGE=5; HS_STATE=fresh; PING_RES=ok; FAIL_COUNT=0
+write_status alive
+SF="$STATE_DIR/$SECTION.json"
+t_true "breaker_tripped=true while engaged, even though this cycle's state is 'alive'" \
+	grep -q '"breaker_tripped": true' "$SF"
+rm -f "$ACTIONS_FILE"
+write_status alive
+t_true "breaker_tripped=false once no recent actions remain" grep -q '"breaker_tripped": false' "$SF"
+set_base_config; OPT_action=monitor
+write_status alive
+t_true "breaker_tripped=false in monitor mode (never trips)" grep -q '"breaker_tripped": false' "$SF"
+
 echo
 echo "==================================="
 echo "PASS=$PASS  FAIL=$FAIL"
