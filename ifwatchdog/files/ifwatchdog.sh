@@ -90,8 +90,11 @@ network_section_names() {
 	uci -q show network 2>/dev/null | sed -n "s/^network\.\([A-Za-z0-9_]*\)=.*/\1/p"
 }
 
-is_protected() {
-	local n="$1" p dev pn rc=1
+# True if $1 matches a DEFAULT_PROTECTED/protected_networks glob pattern.
+# Shared by is_protected() and protected_device_exists() so the matching rule
+# can never drift between the refuse-path and the startup-warning heuristic.
+name_matches_protected() {
+	local n="$1" p rc=1
 	# set -f: DEFAULT_PROTECTED entries are glob patterns to MATCH against $n,
 	# never to expand against the filesystem (guards protected_networks='*').
 	set -f
@@ -100,7 +103,12 @@ is_protected() {
 		case "$n" in $p) rc=0; break ;; esac
 	done
 	set +f
-	[ "$rc" = 0 ] && return 0
+	return $rc
+}
+
+is_protected() {
+	local n="$1" dev pn
+	name_matches_protected "$n" && return 0
 	# Alias networks: protect anything sharing the L3 device of ANY network
 	# whose NAME matches a protected pattern (not just 'lan' specifically) -
 	# e.g. a renamed management network 'mgmt0' on its own bridge still
@@ -109,14 +117,7 @@ is_protected() {
 	[ -n "$dev" ] || return 1
 	for pn in $(network_section_names); do
 		[ "$pn" = "$n" ] && continue
-		set -f
-		rc=1
-		for p in $DEFAULT_PROTECTED ${OPT_protected:-}; do
-			# shellcheck disable=SC2254  # unquoted $p is intentional: glob match
-			case "$pn" in $p) rc=0; break ;; esac
-		done
-		set +f
-		[ "$rc" = 0 ] || continue
+		name_matches_protected "$pn" || continue
 		[ "$(resolve_l3_device "$pn")" = "$dev" ] && return 0
 	done
 	return 1
@@ -126,19 +127,10 @@ is_protected() {
 # i.e. the alias check above has something to compare against. Used only for
 # the startup warning (validate_config), never to refuse a config.
 protected_device_exists() {
-	local pn p
+	local pn
 	for pn in $(network_section_names); do
-		set -f
-		for p in $DEFAULT_PROTECTED ${OPT_protected:-}; do
-			# shellcheck disable=SC2254  # unquoted $p is intentional: glob match
-			case "$pn" in
-				$p)
-					if [ -n "$(resolve_l3_device "$pn")" ]; then
-						set +f; return 0
-					fi ;;
-			esac
-		done
-		set +f
+		name_matches_protected "$pn" || continue
+		[ -n "$(resolve_l3_device "$pn")" ] && return 0
 	done
 	return 1
 }
@@ -292,7 +284,13 @@ handshake_probe() {
 		HS_LAST_SEEN_LATEST="$latest"
 		HS_LAST_SEEN_MONO=$(( nowm - HS_AGE ))
 	fi
-	if [ $(( nowm - HS_LAST_SEEN_MONO )) -le "$OPT_max_handshake_age" ]; then
+	# Re-derive the DISPLAYED age from the same monotonic clock HS_STATE uses,
+	# rather than leaving the wall-clock diff above as-is: otherwise, after
+	# exactly the clock-step scenario this function guards against, the GUI
+	# could show a huge/negative-looking age next to a 'fresh' state - correct
+	# but confusing. The two must never disagree.
+	HS_AGE=$(( nowm - HS_LAST_SEEN_MONO ))
+	if [ "$HS_AGE" -le "$OPT_max_handshake_age" ]; then
 		HS_STATE=fresh
 	else
 		HS_STATE=stale
@@ -425,14 +423,19 @@ recent_action_count() {
 # BusyBox on the target has no 'timeout' applet, so this is a portable
 # background-process + kill pattern instead (F8): a hung/buggy script can no
 # longer block this section's check loop forever.
+# SCRIPT_PID/SCRIPT_WATCHDOG_PID are globals (not local): cleanup() needs them
+# to kill the right process on shutdown. Backgrounding the watchdog AFTER the
+# script means '$!' no longer refers to the script by the time this function
+# returns, which is exactly why cleanup() cannot just use a bare '$!' either.
 run_action_script() {
-	local script_pid watchdog_pid rc
+	local rc
 	"$OPT_script" "$SECTION" "$OPT_interface" "${OPT_action_network:-}" </dev/null &
-	script_pid=$!
-	( sleep "$SCRIPT_TIMEOUT" 2>/dev/null; kill -9 "$script_pid" 2>/dev/null ) &
-	watchdog_pid=$!
-	wait "$script_pid" 2>/dev/null; rc=$?
-	kill "$watchdog_pid" 2>/dev/null; wait "$watchdog_pid" 2>/dev/null
+	SCRIPT_PID=$!
+	( sleep "$SCRIPT_TIMEOUT" 2>/dev/null; kill -9 "$SCRIPT_PID" 2>/dev/null ) &
+	SCRIPT_WATCHDOG_PID=$!
+	wait "$SCRIPT_PID" 2>/dev/null; rc=$?
+	kill "$SCRIPT_WATCHDOG_PID" 2>/dev/null; wait "$SCRIPT_WATCHDOG_PID" 2>/dev/null
+	SCRIPT_PID=""; SCRIPT_WATCHDOG_PID=""
 	[ "$rc" -eq 0 ] || log warn "action script '$OPT_script' exited non-zero or was killed after ${SCRIPT_TIMEOUT}s (rc=$rc)"
 }
 
@@ -563,10 +566,19 @@ safe_idle() { while :; do sleep 3600 & wait "$!"; done; }
 # drop the stale status file so the GUI no longer lists this instance.
 cleanup() {
 	log info "stopping (interface=${OPT_interface:-?})"
-	# '$!' still refers to the backgrounded sleep interrupted by the signal
-	# (main loop / safe_idle both background their sleep and 'wait "$!"'); it
-	# would otherwise linger as an orphan until its own timeout elapses.
-	kill "$!" 2>/dev/null
+	if [ -n "${SCRIPT_PID:-}" ]; then
+		# An action script is in flight: '$!' now refers to its timeout
+		# watchdog (backgrounded after the script in run_action_script), not
+		# the script itself, so a bare 'kill "$!"' here would leave the
+		# script running fully detached and unbounded. Kill both explicitly.
+		kill "$SCRIPT_PID" 2>/dev/null
+		kill "${SCRIPT_WATCHDOG_PID:-}" 2>/dev/null
+	else
+		# '$!' refers to the backgrounded sleep interrupted by the signal
+		# (main loop / safe_idle both background their sleep and 'wait "$!"');
+		# it would otherwise linger as an orphan until its own timeout elapses.
+		kill "$!" 2>/dev/null
+	fi
 	rm -f "$STATE_DIR/$SECTION.json" 2>/dev/null
 	[ -n "${ACTIONS_FILE:-}" ] && rm -f "${ACTIONS_FILE}.lock"
 	exit 0
@@ -592,6 +604,7 @@ main() {
 	lock_tuning
 	HS_AGE=""; HS_STATE=n/a; PING_RES="n/a"; FAIL_COUNT=0; HS_UNKNOWN_LOGGED=0; BREAKER_LOGGED=0; HOLDING=0
 	HS_LAST_SEEN_LATEST=""; HS_LAST_SEEN_MONO=0
+	SCRIPT_PID=""; SCRIPT_WATCHDOG_PID=""
 
 	# Fail-safe invariant: only SIGTERM/SIGINT may exit. Every "cannot work"
 	# condition writes a status file and idles, so the GUI still lists it.

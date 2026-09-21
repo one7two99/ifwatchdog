@@ -178,7 +178,7 @@ return view.extend({
 
 		o = s.option(form.Value, 'interval', _('Check interval (s)'),
 			_('Seconds between checks.'));
-		o.modalonly = true; o.datatype = 'min(5)'; o.default = '60';
+		o.modalonly = true; o.datatype = 'and(uinteger,min(5))'; o.default = '60';
 
 		o = s.option(form.Value, 'failures', _('Failures before action'),
 			_('Number of consecutive failed checks before the action is taken.'));
@@ -210,7 +210,7 @@ return view.extend({
 
 		o = s.option(form.Value, 'max_actions', _('Max actions per window'),
 			_('Circuit breaker: maximum number of actions allowed within the action window (1-100).'));
-		o.modalonly = true; o.datatype = 'range(1,100)'; o.default = '5';
+		o.modalonly = true; o.datatype = 'and(uinteger,range(1,100))'; o.default = '5';
 
 		o = s.option(form.Value, 'action_window', _('Action window (s)'),
 			_('Length of the circuit-breaker window, in seconds. Must be >= 300 once an action other ' +
