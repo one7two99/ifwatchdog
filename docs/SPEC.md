@@ -153,6 +153,8 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
 - `wg` → `wireguard-tools` only for `method=handshake/both` — a **soft dependency** (the script checks
   whether `wg` exists; otherwise it degrades the method to `ping` and logs a note). Keeps the base
   package small.
+- `action=script` is bounded by a portable background-process + `kill` pattern rather than the
+  coreutils `timeout` applet, which stock BusyBox builds do not ship.
 
 ---
 

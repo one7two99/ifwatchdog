@@ -392,6 +392,10 @@ last_action_wall() {
 
 # Caps the shared actions file at this many lines regardless of any single
 # section's action_window - see prune_actions_file.
+# A hung action script would otherwise block this section's entire check
+# loop forever (no more checks, no more recovery, until the hang resolves).
+SCRIPT_TIMEOUT=60
+
 ACTIONS_FILE_KEEP=200
 
 # Trims the shared actions file to the most recent ACTIONS_FILE_KEEP lines.
@@ -415,6 +419,21 @@ recent_action_count() {
 	cut=$(( now_m - OPT_action_window ))
 	[ -f "$ACTIONS_FILE" ] || { echo 0; return; }
 	awk -v c="$cut" '$1+0 >= c { n++ } END { print n+0 }' "$ACTIONS_FILE" 2>/dev/null
+}
+
+# Runs the configured action script with a SCRIPT_TIMEOUT-second bound.
+# BusyBox on the target has no 'timeout' applet, so this is a portable
+# background-process + kill pattern instead (F8): a hung/buggy script can no
+# longer block this section's check loop forever.
+run_action_script() {
+	local script_pid watchdog_pid rc
+	"$OPT_script" "$SECTION" "$OPT_interface" "${OPT_action_network:-}" </dev/null &
+	script_pid=$!
+	( sleep "$SCRIPT_TIMEOUT" 2>/dev/null; kill -9 "$script_pid" 2>/dev/null ) &
+	watchdog_pid=$!
+	wait "$script_pid" 2>/dev/null; rc=$?
+	kill "$watchdog_pid" 2>/dev/null; wait "$watchdog_pid" 2>/dev/null
+	[ "$rc" -eq 0 ] || log warn "action script '$OPT_script' exited non-zero or was killed after ${SCRIPT_TIMEOUT}s (rc=$rc)"
 }
 
 # Performs the configured action, honouring debounce + circuit breaker on
@@ -468,7 +487,7 @@ take_action() {
 				|| log warn "ifup '$OPT_action_network' returned non-zero (action may have failed)" ;;
 		script)
 			log warn "running action script: $OPT_script"
-			"$OPT_script" "$SECTION" "$OPT_interface" "${OPT_action_network:-}" </dev/null ;;
+			run_action_script ;;
 	esac
 }
 

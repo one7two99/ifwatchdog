@@ -402,6 +402,24 @@ t_eq INSIDE "$esc" "action_network '../../tmp/x' is rejected -> path stays insid
 case "$(esc_network 'wg1')" in */act-wg1.actions) esc=KEPT ;; *) esc=LOST ;; esac
 t_eq KEPT "$esc" "a valid action_network is preserved for the path"
 
+echo "# F8: a hung action script cannot block the check loop forever"
+mkdir -p "$TMP/sdir2"
+cat > "$TMP/sdir2/hang.sh" <<'HANG'
+#!/bin/sh
+sleep 60
+HANG
+chmod 0755 "$TMP/sdir2/hang.sh"
+set_base_config; OPT_action=script; OPT_script="$TMP/sdir2/hang.sh"
+SCRIPT_TIMEOUT=1   # override the 60s default so the test doesn't itself hang
+t0=$(now_mono)
+run_action_script
+t1=$(now_mono)
+t_true "hung script is killed well before its own sleep would return" [ $(( t1 - t0 )) -lt 30 ]
+# the killed script must not linger as an orphan
+sleep 1
+t_false "hung script process no longer running after the timeout" pgrep -f "$TMP/sdir2/hang.sh"
+SCRIPT_TIMEOUT=60
+
 echo "# low-severity hardening"
 IFWATCHDOG_TEST=0 sh "$SCRIPT" 'bad;name' >/dev/null 2>&1; t_eq 2 "$?" "invalid section name exits 2"
 IFWATCHDOG_TEST=0 sh "$SCRIPT" '' >/dev/null 2>&1;         t_eq 2 "$?" "empty section name exits 2"

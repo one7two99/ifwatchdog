@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `protected_networks` should cover the management network. It warns, never rejects.
 
 ### Fixed
+- **F8:** `action=script` now runs under a 60 s bound (`run_action_script`, a portable
+  background-process + `kill` pattern — the target BusyBox build has no `timeout` applet) — a
+  hung/buggy custom script could previously block that section's entire check loop (no more checks,
+  no more recovery) indefinitely.
 - **F7:** `valid_uint` now caps input at 7 digits (well beyond any sane config value, keeps every
   arithmetic use safely in range) instead of accepting arbitrarily long digit strings; `max_handshake_age`
   must be >= 30 when `method` is `handshake`/`both` (below WireGuard's default `persistent_keepalive`
