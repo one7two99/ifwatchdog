@@ -41,10 +41,14 @@ log() {
 # --- validation ------------------------------------------------------------
 
 valid_uint() {
-	case "${1:-}" in
+	local n="${1:-}"
+	case "$n" in
 		''|*[!0-9]*) return 1 ;;
-		*) return 0 ;;
 	esac
+	# 7 digits (< ~116 days in seconds) is far beyond any sane config value and
+	# keeps every arithmetic use ($(( )), sleep, date diffs) well inside a
+	# 32-bit-safe range - a UCI-write-privileged value cannot misbehave there.
+	[ "${#n}" -le 7 ]
 }
 
 valid_ifname() {
@@ -185,6 +189,15 @@ validate_config() {
 		ping|both)
 			valid_host "${OPT_ping_host:-}" \
 				|| { log crit "method '$OPT_method' needs a valid 'ping_host'"; return 1; } ;;
+	esac
+	case "$OPT_method" in
+		handshake|both)
+			# Below the default WireGuard persistent_keepalive cadence (25s), a
+			# healthy tunnel would constantly re-register as stale between
+			# keepalives, causing false actions/alarms - not a security hole, but
+			# a self-inflicted footgun worth refusing outright.
+			[ "$OPT_max_handshake_age" -ge 30 ] \
+				|| { log crit "'max_handshake_age' must be >= 30 when method is '$OPT_method'"; return 1; } ;;
 	esac
 
 	case "$OPT_action" in

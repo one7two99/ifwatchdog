@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `protected_networks` should cover the management network. It warns, never rejects.
 
 ### Fixed
+- **F7:** `valid_uint` now caps input at 7 digits (well beyond any sane config value, keeps every
+  arithmetic use safely in range) instead of accepting arbitrarily long digit strings; `max_handshake_age`
+  must be >= 30 when `method` is `handshake`/`both` (below WireGuard's default `persistent_keepalive`
+  cadence, a healthy tunnel would constantly re-register as stale between keepalives).
 - **F6:** handshake freshness is now judged on monotonic time elapsed since the current handshake
   value was first observed, not a wall-clock diff recomputed against `wg show`'s reported epoch every
   cycle — a wall-clock step shortly after boot (no RTC) could otherwise flip a persisting handshake's

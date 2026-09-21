@@ -121,6 +121,9 @@ t_true  "valid_uint 5"                 valid_uint 5
 t_false "valid_uint empty"             valid_uint ""
 t_false "valid_uint 5a"                valid_uint 5a
 t_false "valid_uint -1"                valid_uint -1
+t_true  "valid_uint 7 digits (F7)"     valid_uint 9999999
+t_false "valid_uint 8 digits (F7)"     valid_uint 10000000
+t_false "valid_uint 20 digits (F7)"    valid_uint 12345678901234567890
 t_true  "valid_ifname wg0"             valid_ifname wg0
 t_true  "valid_ifname br-lan"          valid_ifname br-lan
 t_false "valid_ifname injection ;"     valid_ifname "wg0;reboot"
@@ -217,6 +220,10 @@ unset CFG_NET_lan; unset LOGCAP
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_action_window=60; t_false "reject action_window<300 with action" validate_config
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_max_actions=101;  t_false "reject max_actions>100 (F2)" validate_config
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_max_actions=100;  t_true  "accept max_actions=100 (F2)" validate_config
+set_base_config; OPT_method=handshake; OPT_max_handshake_age=5;  t_false "reject max_handshake_age<30 with method=handshake (F7)" validate_config
+set_base_config; OPT_method=both;      OPT_max_handshake_age=5;  t_false "reject max_handshake_age<30 with method=both (F7)" validate_config
+set_base_config; OPT_method=ping;      OPT_max_handshake_age=5;  t_true  "accept max_handshake_age<30 with method=ping (unused)" validate_config
+set_base_config; OPT_method=handshake; OPT_max_handshake_age=30; t_true  "accept max_handshake_age=30 with method=handshake (F7)" validate_config
 
 echo "# handshake tri-state"
 set_base_config; OPT_method=handshake
