@@ -171,8 +171,8 @@ validate_config() {
 	valid_uint "$OPT_failures" && [ "$OPT_failures" -ge 1 ] \
 		|| { log crit "invalid 'failures' (must be integer >= 1)"; return 1; }
 	valid_uint "$OPT_debounce"          || { log crit "invalid 'debounce'"; return 1; }
-	valid_uint "$OPT_max_actions" && [ "$OPT_max_actions" -ge 1 ] \
-		|| { log crit "invalid 'max_actions' (>= 1)"; return 1; }
+	valid_uint "$OPT_max_actions" && [ "$OPT_max_actions" -ge 1 ] && [ "$OPT_max_actions" -le 100 ] \
+		|| { log crit "invalid 'max_actions' (must be 1-100 - the shared actions file keeps the last $ACTIONS_FILE_KEEP entries)"; return 1; }
 	valid_uint "$OPT_action_window"     || { log crit "invalid 'action_window'"; return 1; }
 	valid_uint "$OPT_ping_timeout" && [ "$OPT_ping_timeout" -ge 1 ] \
 		|| { log crit "invalid 'ping_timeout' (>= 1)"; return 1; }
@@ -358,15 +358,31 @@ last_action_wall() {
 	tail -n1 "$ACTIONS_FILE" 2>/dev/null | awk '{ print $2+0 }'
 }
 
-# Prunes entries older than the window (by monotonic time) and echoes how many
-# remain. The caller holds the lock.
+# Caps the shared actions file at this many lines regardless of any single
+# section's action_window - see prune_actions_file.
+ACTIONS_FILE_KEEP=200
+
+# Trims the shared actions file to the most recent ACTIONS_FILE_KEEP lines.
+# Deliberately NOT keyed on the calling section's own action_window: two
+# sections sharing a target can have different windows (e.g. 300s vs 3600s),
+# and pruning by the shorter one would silently erase history the
+# longer-window section still needs to count correctly. The caller holds the
+# lock.
+prune_actions_file() {
+	[ -f "$ACTIONS_FILE" ] || return 0
+	awk -v keep="$ACTIONS_FILE_KEEP" \
+		'{ line[NR]=$0 } END { s=(NR>keep)?NR-keep+1:1; for (i=s;i<=NR;i++) print line[i] }' \
+		"$ACTIONS_FILE" > "$ACTIONS_FILE.tmp" 2>/dev/null && mv "$ACTIONS_FILE.tmp" "$ACTIONS_FILE"
+}
+
+# Counts entries within the last OPT_action_window seconds (by monotonic
+# time). Pure read - never modifies the file (pruning is prune_actions_file's
+# job, run once per take_action() regardless of which section is calling).
 recent_action_count() {
 	local now_m="$1" cut
 	cut=$(( now_m - OPT_action_window ))
 	[ -f "$ACTIONS_FILE" ] || { echo 0; return; }
-	awk -v c="$cut" '$1+0 >= c { print }' "$ACTIONS_FILE" > "$ACTIONS_FILE.tmp" 2>/dev/null \
-		&& mv "$ACTIONS_FILE.tmp" "$ACTIONS_FILE"
-	awk 'END { print NR }' "$ACTIONS_FILE" 2>/dev/null || echo 0
+	awk -v c="$cut" '$1+0 >= c { n++ } END { print n+0 }' "$ACTIONS_FILE" 2>/dev/null
 }
 
 # Performs the configured action, honouring debounce + circuit breaker on
@@ -396,6 +412,7 @@ take_action() {
 		ACTION_OUTCOME=debounced
 		return 0
 	fi
+	prune_actions_file
 	cnt="$(recent_action_count "$now_m")"
 	if [ "$cnt" -ge "$OPT_max_actions" ]; then
 		# Rate-limit: err once on entry to the tripped state, info thereafter.

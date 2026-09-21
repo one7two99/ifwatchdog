@@ -215,6 +215,8 @@ t_true  "lan present: valid action_network accepted" validate_config
 t_false "lan present: no alias-protection warning" grep -q "alias protection is inactive" "$LOGCAP"
 unset CFG_NET_lan; unset LOGCAP
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_action_window=60; t_false "reject action_window<300 with action" validate_config
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_max_actions=101;  t_false "reject max_actions>100 (F2)" validate_config
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_max_actions=100;  t_true  "accept max_actions=100 (F2)" validate_config
 
 echo "# handshake tri-state"
 set_base_config; OPT_method=handshake
@@ -325,6 +327,22 @@ ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.
 : > "$IFUP_LOG"
 take_action; take_action; take_action   # 3 actions on one shared counter, cap=2
 t_eq 2 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "shared breaker caps at max_actions across sections"
+
+echo "# F2: a short-window section's action must not erase actions-file history a longer-window section sharing the same target still needs"
+set_base_config; OPT_action=ifup; OPT_action_network=mixedwin; OPT_debounce=0; OPT_max_actions=100; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-mixedwin.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null
+nowm=$(now_mono)
+echo "$(( nowm - 1000 )) $(date +%s)" > "$ACTIONS_FILE"   # 1000s old: outside a 300s window, inside a 3600s one
+: > "$IFUP_LOG"
+take_action   # "section B" (short window) acts once
+t_eq acted "$ACTION_OUTCOME" "section B (window=300) acts once"
+t_eq 2 "$(wc -l < "$ACTIONS_FILE" | tr -d ' ')" "old entry survives B's prune+append (2 lines total)"
+nowm2=$(now_mono)
+cnt_b="$(recent_action_count "$nowm2")"
+t_eq 1 "$cnt_b" "section B's own count (window=300) excludes the 1000s-old entry"
+OPT_action_window=3600   # "section A" checking the SAME shared file with a longer window
+cnt_a="$(recent_action_count "$nowm2")"
+t_eq 2 "$cnt_a" "section A's count (window=3600) still sees the old entry B did not erase"
 
 echo "# two sections sharing a target, CONCURRENT processes (5B.1 / M-neu-2)"
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=5; OPT_action_window=300

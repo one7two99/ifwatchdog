@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `protected_networks` should cover the management network. It warns, never rejects.
 
 ### Fixed
+- **F2:** `recent_action_count` no longer prunes the shared per-target actions file by the *calling*
+  section's own `action_window` — two sections watching the same target with different windows (e.g.
+  300 s vs 3600 s, an explicitly supported multi-instance setup) could otherwise have the shorter-window
+  section silently erase history the longer-window section still needed, undercounting its breaker.
+  Pruning is now a separate, window-independent step that caps the shared file at the most recent 200
+  entries; counting is a pure read. `max_actions` is capped at 100 to keep headroom under that cap.
 - **M1:** debounce and the circuit breaker now use monotonic time (`/proc/uptime`), so an NTP step at
   boot (routers have no RTC) can no longer reset the breaker or freeze debounce. The actions file line
   is `<mono> <wall>`; wall time is used only for display.
