@@ -101,10 +101,12 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   rejected (a leading `-` never passes `valid_ifname`/`valid_host`), so a value can never turn into
   `ifup -a` or a `ping` flag.
 - **Interface denylist** (`is_protected`): `DEFAULT_PROTECTED` holds glob patterns
-  (`lan lan[0-9]* mgmt* management* admin loopback`), matched under `set -f` so a pattern is never
-  expanded against the filesystem. Additionally, any network whose L3 `device` equals the LAN device
-  is protected (alias-network self-lockout). `wan` is deliberately **not** protected. Admins extend
-  the list via `protected_networks` (a `list` of glob patterns).
+  (`lan* mgmt* management* admin loopback`), matched under `set -f` so a pattern is never expanded
+  against the filesystem. Additionally, any network whose *live* L3 device (resolved via `ifstatus`,
+  falling back to the static `device`/`ifname` UCI options) equals the L3 device of **any** network
+  whose name matches a protected pattern — not only `lan` — is protected (alias-network self-lockout,
+  e.g. a renamed/second management network protects its own aliases too). `wan` is deliberately **not**
+  protected. Admins extend the list via `protected_networks` (a `list` of glob patterns).
 - **Detection is tri-state.** `handshake_probe` sets `HS_STATE` = `fresh|stale|unknown`; `unknown`
   ("cannot measure": wg missing, non-WG/absent interface, no handshake yet, clock step) never drives
   an action, and with `method=handshake` the instance holds — the loop then writes `state=holding`

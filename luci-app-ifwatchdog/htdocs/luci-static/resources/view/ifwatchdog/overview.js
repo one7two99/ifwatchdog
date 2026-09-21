@@ -160,7 +160,7 @@ return view.extend({
 		o.validate = ifnameValidate;
 		networks.forEach(function(n) {
 			var nm = n.getName();
-			if (nm && !/^(lan[0-9]*|loopback|mgmt.*|management.*|admin)$/.test(nm))
+			if (nm && !/^(lan.*|loopback|mgmt.*|management.*|admin)$/.test(nm))
 				o.value(nm);
 		});
 

@@ -28,15 +28,43 @@ cat > "$STUBS/uci" <<'EOF'
 # understands:
 #   uci -q get ifwatchdog.<sec>.<opt>   -> CFG_<opt>
 #   uci -q get network.<name>.device    -> CFG_NET_<name>
+#   uci -q get network.<name>.ifname    -> CFG_NET_IFNAME_<name>
+#   uci -q show network                 -> one 'network.<name>=interface' line
+#                                          per CFG_NET_*/CFG_L3_* name currently exported
+if [ "$2" = show ]; then
+	[ "$3" = network ] || exit 0
+	{ env | sed -n 's/^CFG_NET_\([A-Za-z0-9_]*\)=.*/\1/p'
+	  env | sed -n 's/^CFG_L3_\([A-Za-z0-9_]*\)=.*/\1/p'; } \
+		| sort -u | sed 's/^/network./; s/$/=interface/'
+	exit 0
+fi
 key=$3
 case "$key" in
 	network.*.device)
 		name=${key#network.}; name=${name%.device}
 		eval "v=\${CFG_NET_${name}:-}" ;;
+	network.*.ifname)
+		name=${key#network.}; name=${name%.ifname}
+		eval "v=\${CFG_NET_IFNAME_${name}:-}" ;;
 	*)
 		eval "v=\${CFG_${key##*.}:-}" ;;
 esac
 [ -n "${v:-}" ] && printf '%s\n' "$v"
+exit 0
+EOF
+cat > "$STUBS/ifstatus" <<'EOF'
+#!/bin/sh
+# understands: ifstatus <name> -> {"l3_device":"<val>"} if CFG_L3_<name> is set, else {}
+# (simulates the live netifd view, distinct from the static uci 'device' option)
+n="$1"
+eval "v=\${CFG_L3_${n}:-}"
+if [ -n "$v" ]; then printf '{"l3_device":"%s"}\n' "$v"; else printf '{}\n'; fi
+exit 0
+EOF
+cat > "$STUBS/jsonfilter" <<'EOF'
+#!/bin/sh
+# fake: only supports the '-e @.l3_device' usage this script makes
+sed -n 's/.*"l3_device"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 exit 0
 EOF
 cat > "$STUBS/wg" <<'EOF'
@@ -129,9 +157,22 @@ r2=$( (cd "$TMP" && is_protected wg0) && echo P || echo N )
 t_eq "$r1" "$r2" "denylist result is CWD-independent (set -f)"
 t_eq P "$r1" "glob '*' protects all (safe over-protection)"
 OPT_protected=''
-export CFG_NET_lanmgmt=br-lan CFG_NET_lan=br-lan
-t_true  "is_protected alias on br-lan" is_protected lanmgmt
-unset CFG_NET_lanmgmt CFG_NET_lan
+export CFG_NET_officenet=br-lan CFG_NET_lan=br-lan
+t_true  "is_protected alias sharing lan's device" is_protected officenet
+unset CFG_NET_officenet CFG_NET_lan
+# F1: alias protection must generalise to ANY protected-pattern network's
+# device, not just 'lan' - a renamed/second management network protects its
+# aliases too.
+export CFG_NET_mgmt0=br-mgmt CFG_NET_opsaccess=br-mgmt
+t_true  "is_protected alias sharing mgmt0's device (not just lan)" is_protected opsaccess
+unset CFG_NET_mgmt0 CFG_NET_opsaccess
+t_false "is_protected wg0 still allowed after F1 generalisation" is_protected wg0
+# F1: a static 'option device' can be a UCI cross-reference ('@lan') that a
+# plain 'uci get network.$n.device' cannot resolve; ifstatus (live netifd
+# view) must be consulted first.
+export CFG_NET_lan=br-lan CFG_NET_weirdalias='@lan' CFG_L3_weirdalias=br-lan
+t_true  "is_protected alias via '@lan' uci reference (resolved through ifstatus)" is_protected weirdalias
+unset CFG_NET_lan CFG_NET_weirdalias CFG_L3_weirdalias
 
 echo "# validate_config"
 set_base_config; t_true  "good both config"           validate_config

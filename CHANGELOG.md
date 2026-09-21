@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **H4:** `action=script` is confined to a root-owned, non-group/world-writable executable inside the
   package-owned `/usr/libexec/ifwatchdog.d/` (no `..`), checked via `test -O` + `find -perm` (BusyBox
   has no `stat`); the ACL description flags that write access to this package is root-equivalent.
+- **H5:** the alias-protection heuristic now resolves each network's *live* L3 device via
+  `ifstatus` (falling back to the static `device`/`ifname` UCI options when unavailable), and
+  compares against **every** protected-pattern network, not only `lan` — a renamed or second
+  management network (e.g. `mgmt0`) now protects its own aliases too, and a `device` set via a UCI
+  cross-reference (`@lan`) resolves correctly where a raw string comparison could not.
+  `DEFAULT_PROTECTED`'s `lan lan[0-9]*` broadened to `lan*` (also catches `lanmgmt`/`lan-guest`
+  style names); the LuCI dropdown filter broadened to match.
 - **M-neu-2/M-neu-3 (concurrency):** the shared-target action lock is an O_EXCL file create
   (`set -C`) — the POSIX atomic-create primitive, needing no cleanup beyond `rm`. A lock older than 2 minutes is
   treated as abandoned and broken once (`breaking stale lock`), so a SIGKILLed holder can no longer

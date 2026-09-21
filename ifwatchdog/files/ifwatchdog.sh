@@ -17,9 +17,10 @@ PROG=ifwatchdog
 STATE_DIR="${IFWATCHDOG_STATE_DIR:-/var/run/ifwatchdog}"
 
 # Networks that must never be auto-restarted (self-lockout protection).
-# Entries are shell glob patterns, matched case-sensitively.
+# Entries are shell glob patterns, matched case-sensitively. 'lan*' (not just
+# 'lan'/'lan[0-9]*') also catches admin-path aliases like 'lanmgmt'/'lan-guest'.
 # 'wan' is deliberately NOT protected: restarting wan is a legitimate use.
-DEFAULT_PROTECTED="lan lan[0-9]* mgmt* management* admin loopback"
+DEFAULT_PROTECTED="lan* mgmt* management* admin loopback"
 
 # --- logging ---------------------------------------------------------------
 
@@ -65,8 +66,28 @@ valid_host() {
 	esac
 }
 
+# Resolves a UCI network name's actual L3 device. Prefers the live netifd
+# view (ifstatus): a static 'option device' can be a UCI cross-reference
+# ('@lan') or absent (bridge auto-naming), neither of which a plain
+# 'uci get network.$n.device' resolves correctly. Falls back to the static
+# 'device'/'ifname' options when ifstatus is unavailable or the link is down.
+resolve_l3_device() {
+	local n="$1" dev=""
+	if command -v ifstatus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+		dev="$(ifstatus "$n" 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)"
+	fi
+	[ -n "$dev" ] || dev="$(uci -q get "network.$n.device" 2>/dev/null)"
+	[ -n "$dev" ] || dev="$(uci -q get "network.$n.ifname" 2>/dev/null | awk '{print $1}')"
+	printf '%s' "$dev"
+}
+
+# All configured UCI network section names (one per line).
+network_section_names() {
+	uci -q show network 2>/dev/null | sed -n "s/^network\.\([A-Za-z0-9_]*\)=.*/\1/p"
+}
+
 is_protected() {
-	local n="$1" p dev lan_dev rc=1
+	local n="$1" p dev pn rc=1
 	# set -f: DEFAULT_PROTECTED entries are glob patterns to MATCH against $n,
 	# never to expand against the filesystem (guards protected_networks='*').
 	set -f
@@ -76,11 +97,45 @@ is_protected() {
 	done
 	set +f
 	[ "$rc" = 0 ] && return 0
-	# Alias networks: protect anything sharing the LAN's L3 device
-	# (e.g. a second 'lanmgmt' interface on br-lan renegotiates the admin path).
-	dev="$(uci -q get "network.$n.device" 2>/dev/null)"
-	lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
-	[ -n "$dev" ] && [ -n "$lan_dev" ] && [ "$dev" = "$lan_dev" ] && return 0
+	# Alias networks: protect anything sharing the L3 device of ANY network
+	# whose NAME matches a protected pattern (not just 'lan' specifically) -
+	# e.g. a renamed management network 'mgmt0' on its own bridge still
+	# protects a second alias pointed at that same bridge under another name.
+	dev="$(resolve_l3_device "$n")"
+	[ -n "$dev" ] || return 1
+	for pn in $(network_section_names); do
+		[ "$pn" = "$n" ] && continue
+		set -f
+		rc=1
+		for p in $DEFAULT_PROTECTED ${OPT_protected:-}; do
+			# shellcheck disable=SC2254  # unquoted $p is intentional: glob match
+			case "$pn" in $p) rc=0; break ;; esac
+		done
+		set +f
+		[ "$rc" = 0 ] || continue
+		[ "$(resolve_l3_device "$pn")" = "$dev" ] && return 0
+	done
+	return 1
+}
+
+# True if at least one protected-pattern network name resolves an L3 device -
+# i.e. the alias check above has something to compare against. Used only for
+# the startup warning (validate_config), never to refuse a config.
+protected_device_exists() {
+	local pn p
+	for pn in $(network_section_names); do
+		set -f
+		for p in $DEFAULT_PROTECTED ${OPT_protected:-}; do
+			# shellcheck disable=SC2254  # unquoted $p is intentional: glob match
+			case "$pn" in
+				$p)
+					if [ -n "$(resolve_l3_device "$pn")" ]; then
+						set +f; return 0
+					fi ;;
+			esac
+		done
+		set +f
+	done
 	return 1
 }
 
@@ -137,13 +192,13 @@ validate_config() {
 		ifup)
 			valid_ifname "${OPT_action_network:-}" \
 				|| { log crit "action 'ifup' needs a valid 'action_network'"; return 1; }
-			# Automatic alias protection resolves network.lan.device; if the LAN
-			# section was renamed (e.g. 'trusted'/'homelan') it resolves nothing
-			# AND the name globs (lan*/mgmt*/...) miss it, so the heuristic is
+			# Automatic alias protection compares against protected-pattern
+			# networks' L3 devices; if every admin network was renamed away
+			# from lan*/mgmt*/... it resolves nothing, so the heuristic is
 			# silently inactive. Warn once (validate_config runs once per start);
 			# do NOT refuse - a router legitimately may have no 'lan' section.
-			if [ -z "$(uci -q get network.lan.device 2>/dev/null)" ]; then
-				log warn "no 'lan' network found - automatic alias protection is inactive; verify 'protected_networks' covers your management network"
+			if ! protected_device_exists; then
+				log warn "no protected network (lan/mgmt/...) resolves an L3 device - automatic alias protection is inactive; verify 'protected_networks' covers your management network"
 			fi
 			if is_protected "$OPT_action_network"; then
 				log crit "refusing: 'action_network=$OPT_action_network' is protected"; return 1
