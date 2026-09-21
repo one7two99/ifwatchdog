@@ -17,9 +17,10 @@ PROG=ifwatchdog
 STATE_DIR="${IFWATCHDOG_STATE_DIR:-/var/run/ifwatchdog}"
 
 # Networks that must never be auto-restarted (self-lockout protection).
-# Entries are shell glob patterns, matched case-sensitively.
+# Entries are shell glob patterns, matched case-sensitively. 'lan*' (not just
+# 'lan'/'lan[0-9]*') also catches admin-path aliases like 'lanmgmt'/'lan-guest'.
 # 'wan' is deliberately NOT protected: restarting wan is a legitimate use.
-DEFAULT_PROTECTED="lan lan[0-9]* mgmt* management* admin loopback"
+DEFAULT_PROTECTED="lan* mgmt* management* admin loopback"
 
 # --- logging ---------------------------------------------------------------
 
@@ -40,10 +41,14 @@ log() {
 # --- validation ------------------------------------------------------------
 
 valid_uint() {
-	case "${1:-}" in
+	local n="${1:-}"
+	case "$n" in
 		''|*[!0-9]*) return 1 ;;
-		*) return 0 ;;
 	esac
+	# 7 digits (< ~116 days in seconds) is far beyond any sane config value and
+	# keeps every arithmetic use ($(( )), sleep, date diffs) well inside a
+	# 32-bit-safe range - a UCI-write-privileged value cannot misbehave there.
+	[ "${#n}" -le 7 ]
 }
 
 valid_ifname() {
@@ -65,8 +70,28 @@ valid_host() {
 	esac
 }
 
+# Resolves a UCI network name's actual L3 device. Prefers the live netifd
+# view (ifstatus): a static 'option device' can be a UCI cross-reference
+# ('@lan') or absent (bridge auto-naming), neither of which a plain
+# 'uci get network.$n.device' resolves correctly. Falls back to the static
+# 'device'/'ifname' options when ifstatus is unavailable or the link is down.
+resolve_l3_device() {
+	local n="$1" dev=""
+	if command -v ifstatus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+		dev="$(ifstatus "$n" 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)"
+	fi
+	[ -n "$dev" ] || dev="$(uci -q get "network.$n.device" 2>/dev/null)"
+	[ -n "$dev" ] || dev="$(uci -q get "network.$n.ifname" 2>/dev/null | awk '{print $1}')"
+	printf '%s' "$dev"
+}
+
+# All configured UCI network section names (one per line).
+network_section_names() {
+	uci -q show network 2>/dev/null | sed -n "s/^network\.\([A-Za-z0-9_]*\)=.*/\1/p"
+}
+
 is_protected() {
-	local n="$1" p dev lan_dev rc=1
+	local n="$1" p dev pn rc=1
 	# set -f: DEFAULT_PROTECTED entries are glob patterns to MATCH against $n,
 	# never to expand against the filesystem (guards protected_networks='*').
 	set -f
@@ -76,11 +101,45 @@ is_protected() {
 	done
 	set +f
 	[ "$rc" = 0 ] && return 0
-	# Alias networks: protect anything sharing the LAN's L3 device
-	# (e.g. a second 'lanmgmt' interface on br-lan renegotiates the admin path).
-	dev="$(uci -q get "network.$n.device" 2>/dev/null)"
-	lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
-	[ -n "$dev" ] && [ -n "$lan_dev" ] && [ "$dev" = "$lan_dev" ] && return 0
+	# Alias networks: protect anything sharing the L3 device of ANY network
+	# whose NAME matches a protected pattern (not just 'lan' specifically) -
+	# e.g. a renamed management network 'mgmt0' on its own bridge still
+	# protects a second alias pointed at that same bridge under another name.
+	dev="$(resolve_l3_device "$n")"
+	[ -n "$dev" ] || return 1
+	for pn in $(network_section_names); do
+		[ "$pn" = "$n" ] && continue
+		set -f
+		rc=1
+		for p in $DEFAULT_PROTECTED ${OPT_protected:-}; do
+			# shellcheck disable=SC2254  # unquoted $p is intentional: glob match
+			case "$pn" in $p) rc=0; break ;; esac
+		done
+		set +f
+		[ "$rc" = 0 ] || continue
+		[ "$(resolve_l3_device "$pn")" = "$dev" ] && return 0
+	done
+	return 1
+}
+
+# True if at least one protected-pattern network name resolves an L3 device -
+# i.e. the alias check above has something to compare against. Used only for
+# the startup warning (validate_config), never to refuse a config.
+protected_device_exists() {
+	local pn p
+	for pn in $(network_section_names); do
+		set -f
+		for p in $DEFAULT_PROTECTED ${OPT_protected:-}; do
+			# shellcheck disable=SC2254  # unquoted $p is intentional: glob match
+			case "$pn" in
+				$p)
+					if [ -n "$(resolve_l3_device "$pn")" ]; then
+						set +f; return 0
+					fi ;;
+			esac
+		done
+		set +f
+	done
 	return 1
 }
 
@@ -116,8 +175,8 @@ validate_config() {
 	valid_uint "$OPT_failures" && [ "$OPT_failures" -ge 1 ] \
 		|| { log crit "invalid 'failures' (must be integer >= 1)"; return 1; }
 	valid_uint "$OPT_debounce"          || { log crit "invalid 'debounce'"; return 1; }
-	valid_uint "$OPT_max_actions" && [ "$OPT_max_actions" -ge 1 ] \
-		|| { log crit "invalid 'max_actions' (>= 1)"; return 1; }
+	valid_uint "$OPT_max_actions" && [ "$OPT_max_actions" -ge 1 ] && [ "$OPT_max_actions" -le 100 ] \
+		|| { log crit "invalid 'max_actions' (must be 1-100 - the shared actions file keeps the last $ACTIONS_FILE_KEEP entries)"; return 1; }
 	valid_uint "$OPT_action_window"     || { log crit "invalid 'action_window'"; return 1; }
 	valid_uint "$OPT_ping_timeout" && [ "$OPT_ping_timeout" -ge 1 ] \
 		|| { log crit "invalid 'ping_timeout' (>= 1)"; return 1; }
@@ -131,19 +190,28 @@ validate_config() {
 			valid_host "${OPT_ping_host:-}" \
 				|| { log crit "method '$OPT_method' needs a valid 'ping_host'"; return 1; } ;;
 	esac
+	case "$OPT_method" in
+		handshake|both)
+			# Below the default WireGuard persistent_keepalive cadence (25s), a
+			# healthy tunnel would constantly re-register as stale between
+			# keepalives, causing false actions/alarms - not a security hole, but
+			# a self-inflicted footgun worth refusing outright.
+			[ "$OPT_max_handshake_age" -ge 30 ] \
+				|| { log crit "'max_handshake_age' must be >= 30 when method is '$OPT_method'"; return 1; } ;;
+	esac
 
 	case "$OPT_action" in
 		monitor) : ;;
 		ifup)
 			valid_ifname "${OPT_action_network:-}" \
 				|| { log crit "action 'ifup' needs a valid 'action_network'"; return 1; }
-			# Automatic alias protection resolves network.lan.device; if the LAN
-			# section was renamed (e.g. 'trusted'/'homelan') it resolves nothing
-			# AND the name globs (lan*/mgmt*/...) miss it, so the heuristic is
+			# Automatic alias protection compares against protected-pattern
+			# networks' L3 devices; if every admin network was renamed away
+			# from lan*/mgmt*/... it resolves nothing, so the heuristic is
 			# silently inactive. Warn once (validate_config runs once per start);
 			# do NOT refuse - a router legitimately may have no 'lan' section.
-			if [ -z "$(uci -q get network.lan.device 2>/dev/null)" ]; then
-				log warn "no 'lan' network found - automatic alias protection is inactive; verify 'protected_networks' covers your management network"
+			if ! protected_device_exists; then
+				log warn "no protected network (lan/mgmt/...) resolves an L3 device - automatic alias protection is inactive; verify 'protected_networks' covers your management network"
 			fi
 			if is_protected "$OPT_action_network"; then
 				log crit "refusing: 'action_network=$OPT_action_network' is protected"; return 1
@@ -194,22 +262,37 @@ validate_config() {
 # Sets HS_AGE (seconds, may be empty) and HS_STATE (fresh|stale|unknown).
 # 'unknown' = "cannot measure" (wg missing, not a wg iface, iface absent, peer
 # never handshaked, clock stepped) and must NEVER drive an action.
+#
+# Staleness is decided on MONOTONIC time elapsed since we first observed the
+# CURRENT 'latest' value (HS_LAST_SEEN_MONO), not on a wall-clock diff against
+# it: 'wg show' reports a wall-clock epoch, and a wall-clock step (no RTC, NTP
+# sync at/after boot) could otherwise make a genuinely fresh handshake register
+# as stale, or vice versa, for no real reason (F6). The monotonic origin is
+# seeded from the wall-clock age at first sight, so the INITIAL classification
+# of a never-before-seen value still matches a plain wall-clock diff exactly;
+# only a value that PERSISTS across a later clock step stays correctly judged.
 handshake_probe() {
 	HS_AGE=""
 	HS_STATE=unknown
 	command -v wg >/dev/null 2>&1 || return 0
-	local out now latest
+	local out now latest nowm
 	out="$(wg show "$OPT_interface" latest-handshakes 2>/dev/null)" || return 0
 	[ -n "$out" ] || return 0
 	latest="$(printf '%s\n' "$out" | awk '{ if ($2+0 > m) m=$2 } END { print m+0 }')"
 	[ "$latest" -gt 0 ] 2>/dev/null || return 0      # peer never handshaked yet
 	now="$(date +%s)"
 	HS_AGE=$(( now - latest ))
-	if [ "$HS_AGE" -lt 0 ]; then                      # clock stepped backwards / future stamp
-		HS_AGE=""
-		return 0
+	if [ "$HS_AGE" -lt 0 ]; then                      # clock stepped backwards / future stamp:
+		HS_AGE=""                                     # cannot measure at all -> stay 'unknown',
+		return 0                                      # do NOT guess via the monotonic anchor.
 	fi
-	if [ "$HS_AGE" -le "$OPT_max_handshake_age" ]; then
+	nowm="$(now_mono)"
+	: "${HS_LAST_SEEN_LATEST:=}"; : "${HS_LAST_SEEN_MONO:=0}"
+	if [ "$latest" != "$HS_LAST_SEEN_LATEST" ]; then
+		HS_LAST_SEEN_LATEST="$latest"
+		HS_LAST_SEEN_MONO=$(( nowm - HS_AGE ))
+	fi
+	if [ $(( nowm - HS_LAST_SEEN_MONO )) -le "$OPT_max_handshake_age" ]; then
 		HS_STATE=fresh
 	else
 		HS_STATE=stale
@@ -294,24 +377,70 @@ lock_release() { rm -f "$ACTIONS_FILE.lock"; }
 
 # Last recorded action: monotonic seconds (debounce) / wall seconds (display).
 # Actions file line format is "<mono> <wall>".
+# awk's END block always fires (even on zero/blank input), so these always
+# print a number - unlike a bare pattern-action, which prints nothing for an
+# empty or blank-trailing-line file (e.g. right after prune_actions_file
+# empties it), which would otherwise make a caller's '[ "$x" -gt 0 ]' error out.
 last_action_mono() {
 	[ -f "$ACTIONS_FILE" ] || { echo 0; return; }
-	tail -n1 "$ACTIONS_FILE" 2>/dev/null | awk '{ print $1+0 }'
+	tail -n1 "$ACTIONS_FILE" 2>/dev/null | awk '{ v=$1+0 } END { print v+0 }'
 }
 last_action_wall() {
 	[ -f "$ACTIONS_FILE" ] || { echo 0; return; }
-	tail -n1 "$ACTIONS_FILE" 2>/dev/null | awk '{ print $2+0 }'
+	tail -n1 "$ACTIONS_FILE" 2>/dev/null | awk '{ v=$2+0 } END { print v+0 }'
 }
 
-# Prunes entries older than the window (by monotonic time) and echoes how many
-# remain. The caller holds the lock.
+# Caps the shared actions file at this many lines regardless of any single
+# section's action_window - see prune_actions_file.
+# A hung action script would otherwise block this section's entire check
+# loop forever (no more checks, no more recovery, until the hang resolves).
+SCRIPT_TIMEOUT=60
+
+ACTIONS_FILE_KEEP=200
+
+# Trims the shared actions file to the most recent ACTIONS_FILE_KEEP lines.
+# Deliberately NOT keyed on the calling section's own action_window: two
+# sections sharing a target can have different windows (e.g. 300s vs 3600s),
+# and pruning by the shorter one would silently erase history the
+# longer-window section still needs to count correctly. The caller holds the
+# lock.
+prune_actions_file() {
+	[ -f "$ACTIONS_FILE" ] || return 0
+	awk -v keep="$ACTIONS_FILE_KEEP" \
+		'{ line[NR]=$0 } END { s=(NR>keep)?NR-keep+1:1; for (i=s;i<=NR;i++) print line[i] }' \
+		"$ACTIONS_FILE" > "$ACTIONS_FILE.tmp" 2>/dev/null && mv "$ACTIONS_FILE.tmp" "$ACTIONS_FILE"
+}
+
+# Counts entries within the last OPT_action_window seconds (by monotonic
+# time). Pure read - never modifies the file (pruning is prune_actions_file's
+# job, run once per take_action() regardless of which section is calling).
 recent_action_count() {
 	local now_m="$1" cut
 	cut=$(( now_m - OPT_action_window ))
 	[ -f "$ACTIONS_FILE" ] || { echo 0; return; }
-	awk -v c="$cut" '$1+0 >= c { print }' "$ACTIONS_FILE" > "$ACTIONS_FILE.tmp" 2>/dev/null \
-		&& mv "$ACTIONS_FILE.tmp" "$ACTIONS_FILE"
-	awk 'END { print NR }' "$ACTIONS_FILE" 2>/dev/null || echo 0
+	awk -v c="$cut" '$1+0 >= c { n++ } END { print n+0 }' "$ACTIONS_FILE" 2>/dev/null
+}
+
+# Runs the configured action script with a SCRIPT_TIMEOUT-second bound.
+# BusyBox on the target has no 'timeout' applet, so this is a portable
+# background-process + kill pattern instead (F8): a hung/buggy script can no
+# longer block this section's check loop forever.
+run_action_script() {
+	local script_pid watchdog_pid rc
+	"$OPT_script" "$SECTION" "$OPT_interface" "${OPT_action_network:-}" </dev/null &
+	script_pid=$!
+	( sleep "$SCRIPT_TIMEOUT" 2>/dev/null; kill -9 "$script_pid" 2>/dev/null ) &
+	watchdog_pid=$!
+	wait "$script_pid" 2>/dev/null; rc=$?
+	kill "$watchdog_pid" 2>/dev/null; wait "$watchdog_pid" 2>/dev/null
+	[ "$rc" -eq 0 ] || log warn "action script '$OPT_script' exited non-zero or was killed after ${SCRIPT_TIMEOUT}s (rc=$rc)"
+}
+
+# lockbusy is transient lock contention, not a deliberate policy hold like
+# debounce/breaker - the failure counter should keep counting so a legitimate
+# action is not delayed past 'failures' cycles by bad luck on lock timing.
+should_reset_fail_count() {
+	[ "$1" != lockbusy ]
 }
 
 # Performs the configured action, honouring debounce + circuit breaker on
@@ -341,6 +470,7 @@ take_action() {
 		ACTION_OUTCOME=debounced
 		return 0
 	fi
+	prune_actions_file
 	cnt="$(recent_action_count "$now_m")"
 	if [ "$cnt" -ge "$OPT_max_actions" ]; then
 		# Rate-limit: err once on entry to the tripped state, info thereafter.
@@ -364,7 +494,7 @@ take_action() {
 				|| log warn "ifup '$OPT_action_network' returned non-zero (action may have failed)" ;;
 		script)
 			log warn "running action script: $OPT_script"
-			"$OPT_script" "$SECTION" "$OPT_interface" "${OPT_action_network:-}" </dev/null ;;
+			run_action_script ;;
 	esac
 }
 
@@ -380,14 +510,29 @@ json_str() {
 	esac
 }
 
+# True if the shared breaker for this target is CURRENTLY tripped (>=
+# max_actions within the window), independent of whether this cycle itself
+# attempted an action. Feeds the GUI's sticky 'breaker_tripped' indicator, so
+# a row does not look falsely healthy between down-cycles while the breaker
+# is still engaged. Fails safe (false) on any missing/invalid input.
+breaker_is_tripped() {
+	case "${OPT_action:-monitor}" in monitor|'') return 1 ;; esac
+	valid_uint "${OPT_max_actions:-}" || return 1
+	local cnt
+	cnt="$(recent_action_count "$(now_mono)" 2>/dev/null)"
+	valid_uint "${cnt:-}" || return 1
+	[ "$cnt" -ge "$OPT_max_actions" ]
+}
+
 write_status() {
-	local state="$1" f tmp age iv
+	local state="$1" f tmp age iv bt
 	mkdir -p "$STATE_DIR" 2>/dev/null
 	f="$STATE_DIR/$SECTION.json"
 	tmp="$f.$$"
 	case "${HS_AGE:-}" in ''|*[!0-9]*) age=null ;; *) age="$HS_AGE" ;; esac
 	# interval drives the GUI staleness threshold; unvalidated on the invalid path.
 	case "${OPT_interval:-}" in ''|*[!0-9]*) iv=null ;; *) iv="$OPT_interval" ;; esac
+	bt=false; breaker_is_tripped && bt=true
 	cat > "$tmp" <<-JSON
 	{
 	  "section": "$(json_str "$SECTION")",
@@ -401,7 +546,9 @@ write_status() {
 	  "fail_count": ${FAIL_COUNT:-0},
 	  "last_action": $(last_action_wall),
 	  "interval": $iv,
-	  "updated": $(date +%s)
+	  "breaker_tripped": $bt,
+	  "updated": $(date +%s),
+	  "updated_mono": $(now_mono)
 	}
 	JSON
 	chmod 0600 "$tmp" 2>/dev/null
@@ -416,6 +563,10 @@ safe_idle() { while :; do sleep 3600 & wait "$!"; done; }
 # drop the stale status file so the GUI no longer lists this instance.
 cleanup() {
 	log info "stopping (interface=${OPT_interface:-?})"
+	# '$!' still refers to the backgrounded sleep interrupted by the signal
+	# (main loop / safe_idle both background their sleep and 'wait "$!"'); it
+	# would otherwise linger as an orphan until its own timeout elapses.
+	kill "$!" 2>/dev/null
 	rm -f "$STATE_DIR/$SECTION.json" 2>/dev/null
 	[ -n "${ACTIONS_FILE:-}" ] && rm -f "${ACTIONS_FILE}.lock"
 	exit 0
@@ -440,6 +591,7 @@ main() {
 	trap cleanup INT TERM
 	lock_tuning
 	HS_AGE=""; HS_STATE=n/a; PING_RES="n/a"; FAIL_COUNT=0; HS_UNKNOWN_LOGGED=0; BREAKER_LOGGED=0; HOLDING=0
+	HS_LAST_SEEN_LATEST=""; HS_LAST_SEEN_MONO=0
 
 	# Fail-safe invariant: only SIGTERM/SIGINT may exit. Every "cannot work"
 	# condition writes a status file and idles, so the GUI still lists it.
@@ -491,12 +643,13 @@ main() {
 				if [ "$OPT_action" = monitor ]; then
 					log warn "MONITOR: threshold reached on '$OPT_interface' - would act (no-op)"
 					write_status monitor
+					FAIL_COUNT=0
 				else
 					ACTION_OUTCOME=acted
 					take_action
 					write_status "$ACTION_OUTCOME"
+					should_reset_fail_count "$ACTION_OUTCOME" && FAIL_COUNT=0
 				fi
-				FAIL_COUNT=0
 			else
 				write_status down
 			fi

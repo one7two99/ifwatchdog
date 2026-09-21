@@ -28,15 +28,43 @@ cat > "$STUBS/uci" <<'EOF'
 # understands:
 #   uci -q get ifwatchdog.<sec>.<opt>   -> CFG_<opt>
 #   uci -q get network.<name>.device    -> CFG_NET_<name>
+#   uci -q get network.<name>.ifname    -> CFG_NET_IFNAME_<name>
+#   uci -q show network                 -> one 'network.<name>=interface' line
+#                                          per CFG_NET_*/CFG_L3_* name currently exported
+if [ "$2" = show ]; then
+	[ "$3" = network ] || exit 0
+	{ env | sed -n 's/^CFG_NET_\([A-Za-z0-9_]*\)=.*/\1/p'
+	  env | sed -n 's/^CFG_L3_\([A-Za-z0-9_]*\)=.*/\1/p'; } \
+		| sort -u | sed 's/^/network./; s/$/=interface/'
+	exit 0
+fi
 key=$3
 case "$key" in
 	network.*.device)
 		name=${key#network.}; name=${name%.device}
 		eval "v=\${CFG_NET_${name}:-}" ;;
+	network.*.ifname)
+		name=${key#network.}; name=${name%.ifname}
+		eval "v=\${CFG_NET_IFNAME_${name}:-}" ;;
 	*)
 		eval "v=\${CFG_${key##*.}:-}" ;;
 esac
 [ -n "${v:-}" ] && printf '%s\n' "$v"
+exit 0
+EOF
+cat > "$STUBS/ifstatus" <<'EOF'
+#!/bin/sh
+# understands: ifstatus <name> -> {"l3_device":"<val>"} if CFG_L3_<name> is set, else {}
+# (simulates the live netifd view, distinct from the static uci 'device' option)
+n="$1"
+eval "v=\${CFG_L3_${n}:-}"
+if [ -n "$v" ]; then printf '{"l3_device":"%s"}\n' "$v"; else printf '{}\n'; fi
+exit 0
+EOF
+cat > "$STUBS/jsonfilter" <<'EOF'
+#!/bin/sh
+# fake: only supports the '-e @.l3_device' usage this script makes
+sed -n 's/.*"l3_device"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 exit 0
 EOF
 cat > "$STUBS/wg" <<'EOF'
@@ -93,6 +121,9 @@ t_true  "valid_uint 5"                 valid_uint 5
 t_false "valid_uint empty"             valid_uint ""
 t_false "valid_uint 5a"                valid_uint 5a
 t_false "valid_uint -1"                valid_uint -1
+t_true  "valid_uint 7 digits (F7)"     valid_uint 9999999
+t_false "valid_uint 8 digits (F7)"     valid_uint 10000000
+t_false "valid_uint 20 digits (F7)"    valid_uint 12345678901234567890
 t_true  "valid_ifname wg0"             valid_ifname wg0
 t_true  "valid_ifname br-lan"          valid_ifname br-lan
 t_false "valid_ifname injection ;"     valid_ifname "wg0;reboot"
@@ -129,9 +160,22 @@ r2=$( (cd "$TMP" && is_protected wg0) && echo P || echo N )
 t_eq "$r1" "$r2" "denylist result is CWD-independent (set -f)"
 t_eq P "$r1" "glob '*' protects all (safe over-protection)"
 OPT_protected=''
-export CFG_NET_lanmgmt=br-lan CFG_NET_lan=br-lan
-t_true  "is_protected alias on br-lan" is_protected lanmgmt
-unset CFG_NET_lanmgmt CFG_NET_lan
+export CFG_NET_officenet=br-lan CFG_NET_lan=br-lan
+t_true  "is_protected alias sharing lan's device" is_protected officenet
+unset CFG_NET_officenet CFG_NET_lan
+# F1: alias protection must generalise to ANY protected-pattern network's
+# device, not just 'lan' - a renamed/second management network protects its
+# aliases too.
+export CFG_NET_mgmt0=br-mgmt CFG_NET_opsaccess=br-mgmt
+t_true  "is_protected alias sharing mgmt0's device (not just lan)" is_protected opsaccess
+unset CFG_NET_mgmt0 CFG_NET_opsaccess
+t_false "is_protected wg0 still allowed after F1 generalisation" is_protected wg0
+# F1: a static 'option device' can be a UCI cross-reference ('@lan') that a
+# plain 'uci get network.$n.device' cannot resolve; ifstatus (live netifd
+# view) must be consulted first.
+export CFG_NET_lan=br-lan CFG_NET_weirdalias='@lan' CFG_L3_weirdalias=br-lan
+t_true  "is_protected alias via '@lan' uci reference (resolved through ifstatus)" is_protected weirdalias
+unset CFG_NET_lan CFG_NET_weirdalias CFG_L3_weirdalias
 
 echo "# validate_config"
 set_base_config; t_true  "good both config"           validate_config
@@ -174,6 +218,12 @@ t_true  "lan present: valid action_network accepted" validate_config
 t_false "lan present: no alias-protection warning" grep -q "alias protection is inactive" "$LOGCAP"
 unset CFG_NET_lan; unset LOGCAP
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_action_window=60; t_false "reject action_window<300 with action" validate_config
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_max_actions=101;  t_false "reject max_actions>100 (F2)" validate_config
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_max_actions=100;  t_true  "accept max_actions=100 (F2)" validate_config
+set_base_config; OPT_method=handshake; OPT_max_handshake_age=5;  t_false "reject max_handshake_age<30 with method=handshake (F7)" validate_config
+set_base_config; OPT_method=both;      OPT_max_handshake_age=5;  t_false "reject max_handshake_age<30 with method=both (F7)" validate_config
+set_base_config; OPT_method=ping;      OPT_max_handshake_age=5;  t_true  "accept max_handshake_age<30 with method=ping (unused)" validate_config
+set_base_config; OPT_method=handshake; OPT_max_handshake_age=30; t_true  "accept max_handshake_age=30 with method=handshake (F7)" validate_config
 
 echo "# handshake tri-state"
 set_base_config; OPT_method=handshake
@@ -190,6 +240,21 @@ handshake_probe; t_eq unknown "$HS_STATE" "future timestamp -> HS_STATE=unknown"
 WG_FAIL=1; export WG_FAIL
 handshake_probe; t_eq unknown "$HS_STATE" "wg error (iface not found) -> HS_STATE=unknown"
 unset WG_FAIL
+
+echo "# F6: staleness tracks MONOTONIC time since first-seen, not a wall-clock recompute every call"
+set_base_config; OPT_method=handshake; OPT_max_handshake_age=150
+unset HS_LAST_SEEN_LATEST HS_LAST_SEEN_MONO
+WG_HS=$((now-10)); export WG_HS
+handshake_probe; t_eq fresh "$HS_STATE" "same value, 1st sight: fresh (matches a plain wall-clock diff)"
+# Simulate 500 monotonic seconds passing with the SAME handshake value (e.g.
+# the tunnel is idle within its keepalive window) - a naive wall-clock diff
+# against the still-fixed WG_HS would keep reporting ~10s (fresh) forever.
+HS_LAST_SEEN_MONO=$(( $(now_mono) - 500 ))
+handshake_probe; t_eq stale "$HS_STATE" "same value, monotonic time elapsed past max_age: stale (not re-derived from wall clock)"
+# A genuinely NEW handshake (different value) re-anchors and is fresh again.
+WG_HS=$((now-5)); export WG_HS
+handshake_probe; t_eq fresh "$HS_STATE" "a new handshake value re-anchors to fresh"
+unset HS_LAST_SEEN_LATEST HS_LAST_SEEN_MONO
 
 echo "# no action under uncertainty"
 set_base_config; OPT_method=handshake; OPT_action=ifup; OPT_action_network=wg0
@@ -285,6 +350,22 @@ ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.
 take_action; take_action; take_action   # 3 actions on one shared counter, cap=2
 t_eq 2 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "shared breaker caps at max_actions across sections"
 
+echo "# F2: a short-window section's action must not erase actions-file history a longer-window section sharing the same target still needs"
+set_base_config; OPT_action=ifup; OPT_action_network=mixedwin; OPT_debounce=0; OPT_max_actions=100; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-mixedwin.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null
+nowm=$(now_mono)
+echo "$(( nowm - 1000 )) $(date +%s)" > "$ACTIONS_FILE"   # 1000s old: outside a 300s window, inside a 3600s one
+: > "$IFUP_LOG"
+take_action   # "section B" (short window) acts once
+t_eq acted "$ACTION_OUTCOME" "section B (window=300) acts once"
+t_eq 2 "$(wc -l < "$ACTIONS_FILE" | tr -d ' ')" "old entry survives B's prune+append (2 lines total)"
+nowm2=$(now_mono)
+cnt_b="$(recent_action_count "$nowm2")"
+t_eq 1 "$cnt_b" "section B's own count (window=300) excludes the 1000s-old entry"
+OPT_action_window=3600   # "section A" checking the SAME shared file with a longer window
+cnt_a="$(recent_action_count "$nowm2")"
+t_eq 2 "$cnt_a" "section A's count (window=3600) still sees the old entry B did not erase"
+
 echo "# two sections sharing a target, CONCURRENT processes (5B.1 / M-neu-2)"
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=5; OPT_action_window=300
 ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null
@@ -314,12 +395,36 @@ t_eq lockbusy "$ACTION_OUTCOME" "held fresh lock -> take_action reports lockbusy
 t_eq 0 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "held fresh lock -> no ifup while locked"
 rm -f "$ACTIONS_FILE.lock"
 
+echo "# nit: FAIL_COUNT survives a lockbusy outcome (transient contention, not a policy hold)"
+t_false "should_reset_fail_count lockbusy -> false" should_reset_fail_count lockbusy
+t_true  "should_reset_fail_count debounced -> true" should_reset_fail_count debounced
+t_true  "should_reset_fail_count breaker -> true"   should_reset_fail_count breaker
+t_true  "should_reset_fail_count acted -> true"     should_reset_fail_count acted
+
 echo "# an action_network that tries to escape the state dir cannot build a path outside it (5A.5)"
 esc_network(){ n="$1"; valid_ifname "${n:-}" || n=""; printf '%s' "$TMP/state/act-${n:-SEC}.actions"; }
 case "$(esc_network '../../tmp/x')" in *..*) esc=OUTSIDE ;; *) esc=INSIDE ;; esac
 t_eq INSIDE "$esc" "action_network '../../tmp/x' is rejected -> path stays inside the state dir"
 case "$(esc_network 'wg1')" in */act-wg1.actions) esc=KEPT ;; *) esc=LOST ;; esac
 t_eq KEPT "$esc" "a valid action_network is preserved for the path"
+
+echo "# F8: a hung action script cannot block the check loop forever"
+mkdir -p "$TMP/sdir2"
+cat > "$TMP/sdir2/hang.sh" <<'HANG'
+#!/bin/sh
+sleep 60
+HANG
+chmod 0755 "$TMP/sdir2/hang.sh"
+set_base_config; OPT_action=script; OPT_script="$TMP/sdir2/hang.sh"
+SCRIPT_TIMEOUT=1   # override the 60s default so the test doesn't itself hang
+t0=$(now_mono)
+run_action_script
+t1=$(now_mono)
+t_true "hung script is killed well before its own sleep would return" [ $(( t1 - t0 )) -lt 30 ]
+# the killed script must not linger as an orphan
+sleep 1
+t_false "hung script process no longer running after the timeout" pgrep -f "$TMP/sdir2/hang.sh"
+SCRIPT_TIMEOUT=60
 
 echo "# low-severity hardening"
 IFWATCHDOG_TEST=0 sh "$SCRIPT" 'bad;name' >/dev/null 2>&1; t_eq 2 "$?" "invalid section name exits 2"
@@ -363,6 +468,37 @@ if [ -f "$SF" ]; then
 else
 	no "status JSON written"
 fi
+
+echo "# F9: breaker_tripped is sticky - true even when the current cycle's transient state looks healthy"
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=1; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null
+nowm=$(now_mono); echo "$nowm $(date +%s)" > "$ACTIONS_FILE"   # 1 recorded action -> breaker tripped (max_actions=1)
+HS_AGE=5; HS_STATE=fresh; PING_RES=ok; FAIL_COUNT=0
+write_status alive
+SF="$STATE_DIR/$SECTION.json"
+t_true "breaker_tripped=true while engaged, even though this cycle's state is 'alive'" \
+	grep -q '"breaker_tripped": true' "$SF"
+rm -f "$ACTIONS_FILE"
+write_status alive
+t_true "breaker_tripped=false once no recent actions remain" grep -q '"breaker_tripped": false' "$SF"
+set_base_config; OPT_action=monitor
+write_status alive
+t_true "breaker_tripped=false in monitor mode (never trips)" grep -q '"breaker_tripped": false' "$SF"
+
+echo "# F4: status JSON carries a monotonic timestamp for GUI staleness (immune to NTP steps)"
+t_true "updated_mono present in status JSON" grep -Eq '"updated_mono": [0-9]+' "$SF"
+
+echo "# F5: last_action_mono/wall stay numeric against an empty or blank actions file"
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=5; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-empty.actions"
+: > "$ACTIONS_FILE"                       # 0 bytes, e.g. right after prune_actions_file empties it
+t_eq 0 "$(last_action_mono)" "last_action_mono is numeric 0 on an empty file"
+t_eq 0 "$(last_action_wall)" "last_action_wall is numeric 0 on an empty file"
+printf '\n' > "$ACTIONS_FILE"             # blank trailing line, no fields
+t_eq 0 "$(last_action_mono)" "last_action_mono is numeric 0 on a blank-line file"
+: > "$IFUP_LOG"; take_action              # must not error out / must still act (no valid last action)
+t_eq acted "$ACTION_OUTCOME" "take_action still acts against an empty actions file"
+rm -f "$ACTIONS_FILE"
 
 echo
 echo "==================================="

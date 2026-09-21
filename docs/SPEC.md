@@ -101,15 +101,20 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   rejected (a leading `-` never passes `valid_ifname`/`valid_host`), so a value can never turn into
   `ifup -a` or a `ping` flag.
 - **Interface denylist** (`is_protected`): `DEFAULT_PROTECTED` holds glob patterns
-  (`lan lan[0-9]* mgmt* management* admin loopback`), matched under `set -f` so a pattern is never
-  expanded against the filesystem. Additionally, any network whose L3 `device` equals the LAN device
-  is protected (alias-network self-lockout). `wan` is deliberately **not** protected. Admins extend
-  the list via `protected_networks` (a `list` of glob patterns).
+  (`lan* mgmt* management* admin loopback`), matched under `set -f` so a pattern is never expanded
+  against the filesystem. Additionally, any network whose *live* L3 device (resolved via `ifstatus`,
+  falling back to the static `device`/`ifname` UCI options) equals the L3 device of **any** network
+  whose name matches a protected pattern — not only `lan` — is protected (alias-network self-lockout,
+  e.g. a renamed/second management network protects its own aliases too). `wan` is deliberately **not**
+  protected. Admins extend the list via `protected_networks` (a `list` of glob patterns).
 - **Detection is tri-state.** `handshake_probe` sets `HS_STATE` = `fresh|stale|unknown`; `unknown`
   ("cannot measure": wg missing, non-WG/absent interface, no handshake yet, clock step) never drives
   an action, and with `method=handshake` the instance holds — the loop then writes `state=holding`
   (not `alive`) and keeps the failure counter, so a hold is never reported as measured health. The
-  status JSON carries `handshake_state`.
+  status JSON carries `handshake_state`. Freshness is judged on **monotonic** time elapsed since the
+  current handshake value was first observed (seeded from the wall-clock age at that first sight), not
+  a wall-clock diff recomputed every cycle — a later NTP step can no longer flip a persisting value's
+  classification either way.
 - **`action=script` is confined** to a root-owned, non-group/world-writable executable inside
   `/usr/libexec/ifwatchdog.d/` (no `..`). Ownership/permissions are checked with `test -O` + `find`
   (stock BusyBox has no `stat`). Write access to the UCI package is root-equivalent by design.
@@ -129,10 +134,17 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   sections seeing a stall in the same second still emit only one action. A lock older than **2 minutes**
   is treated as abandoned and broken once (`breaking stale lock`), so a SIGKILLed holder cannot block
   the shared target forever; a lock that cannot be taken is reported `lockbusy` (not the breaker).
-- **Status states:** `alive`, `holding`, `invalid`, `disabled`, and the transient `lockbusy`, plus a
-  GUI-side `stale` when the status file stopped updating for `max(180 s, 3 × interval)` (scales with
-  the interval so a slow instance is not flagged every poll). The status JSON carries `interval`.
-  `holding`/`lockbusy` are amber ("cannot measure / retry"); `invalid`/`disabled`/`stale` are red.
+- **Status states:** `alive`, `holding`, `down`, `invalid`, `disabled`, and the transient
+  `debounced`/`breaker`/`lockbusy`/`acted`, plus a GUI-side `stale` when the status file stopped
+  updating for `max(180 s, 3 × interval)` (scales with the interval so a slow instance is not flagged
+  every poll). Staleness is measured against the router's own monotonic clock (`updated_mono` in the
+  status JSON, `now_mono` returned by the rpcd `status` call) rather than wall time, so an NTP step at
+  boot cannot make a fresh row look stale or a truly stale one look fresh; wall time (`updated`) is a
+  fallback only. The status JSON carries `interval` and a sticky `breaker_tripped` boolean (true whenever
+  the shared breaker is currently engaged for this target, independent of the current cycle's
+  transient state, so a row does not look falsely healthy between down-cycles). `holding`/`lockbusy`/
+  `down` are amber ("cannot measure / early warning"); `invalid`/`disabled`/`stale`/`breaker`/
+  `breaker_tripped` are red.
   On service start the per-process **status** files and any leftover **lock** file (an O_EXCL regular
   file, removed with `rm -f`) are cleared; the per-target `.actions` breaker files are kept (see above).
 
@@ -141,6 +153,8 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
 - `wg` → `wireguard-tools` only for `method=handshake/both` — a **soft dependency** (the script checks
   whether `wg` exists; otherwise it degrades the method to `ping` and logs a note). Keeps the base
   package small.
+- `action=script` is bounded by a portable background-process + `kill` pattern rather than the
+  coreutils `timeout` applet, which stock BusyBox builds do not ship.
 
 ---
 

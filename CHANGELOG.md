@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **H4:** `action=script` is confined to a root-owned, non-group/world-writable executable inside the
   package-owned `/usr/libexec/ifwatchdog.d/` (no `..`), checked via `test -O` + `find -perm` (BusyBox
   has no `stat`); the ACL description flags that write access to this package is root-equivalent.
+- **H5:** the alias-protection heuristic now resolves each network's *live* L3 device via
+  `ifstatus` (falling back to the static `device`/`ifname` UCI options when unavailable), and
+  compares against **every** protected-pattern network, not only `lan` — a renamed or second
+  management network (e.g. `mgmt0`) now protects its own aliases too, and a `device` set via a UCI
+  cross-reference (`@lan`) resolves correctly where a raw string comparison could not.
+  `DEFAULT_PROTECTED`'s `lan lan[0-9]*` broadened to `lan*` (also catches `lanmgmt`/`lan-guest`
+  style names); the LuCI dropdown filter broadened to match.
 - **M-neu-2/M-neu-3 (concurrency):** the shared-target action lock is an O_EXCL file create
   (`set -C`) — the POSIX atomic-create primitive, needing no cleanup beyond `rm`. A lock older than 2 minutes is
   treated as abandoned and broken once (`breaking stale lock`), so a SIGKILLed holder can no longer
@@ -45,6 +52,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `protected_networks` should cover the management network. It warns, never rejects.
 
 ### Fixed
+- **Nits:** the backgrounded check-loop `sleep` is now killed in `cleanup()` on shutdown instead of
+  lingering as a harmless orphan until its own timeout elapses; `FAIL_COUNT` is no longer reset after a
+  `lockbusy` outcome (transient lock contention, unlike the deliberate `debounced`/`breaker` holds), so
+  a legitimate action is not delayed past `failures` cycles by bad luck on lock timing; the LuCI form
+  now validates `debounce`/`action_window`/`max_handshake_age` against their conditional backend floors
+  (only once an action/method that needs them is selected, so a valid monitor-mode `debounce=0` is
+  still accepted) and caps `max_actions` at 1-100 to match the backend. `ping_host`'s datatype stays
+  `'host'` (a reviewed suggestion to tighten it to `'ipaddr'` was rejected — the backend's `valid_host`
+  intentionally also accepts hostnames).
+- **F8:** `action=script` now runs under a 60 s bound (`run_action_script`, a portable
+  background-process + `kill` pattern — the target BusyBox build has no `timeout` applet) — a
+  hung/buggy custom script could previously block that section's entire check loop (no more checks,
+  no more recovery) indefinitely.
+- **F7:** `valid_uint` now caps input at 7 digits (well beyond any sane config value, keeps every
+  arithmetic use safely in range) instead of accepting arbitrarily long digit strings; `max_handshake_age`
+  must be >= 30 when `method` is `handshake`/`both` (below WireGuard's default `persistent_keepalive`
+  cadence, a healthy tunnel would constantly re-register as stale between keepalives).
+- **F6:** handshake freshness is now judged on monotonic time elapsed since the current handshake
+  value was first observed, not a wall-clock diff recomputed against `wg show`'s reported epoch every
+  cycle — a wall-clock step shortly after boot (no RTC) could otherwise flip a persisting handshake's
+  classification either way for no real reason. The monotonic origin is seeded from the wall-clock age
+  at first sight, so the initial classification of a never-before-seen value is unchanged; `method=both`
+  mitigated most practical impact via the ping fallback, but this closes the gap directly.
+- **F5:** `last_action_mono`/`last_action_wall` now always print a number, even against an empty or
+  blank-trailing-line actions file (e.g. right after pruning empties it) — the previous bare
+  pattern-action `awk` printed nothing for such input, which made a caller's `[ "$last_m" -gt 0 ]`
+  fail with a raw shell "integer expression expected" error instead of the intended "no prior action"
+  result. The rpcd `status` backend also skips any per-instance file that fails a `jsonfilter`
+  validity check instead of `cat`-ing it unconditionally into the aggregated response.
+- **F4:** the GUI staleness check compared wall-clock `Date.now()` against the status JSON's `updated`
+  field only — inconsistent with the rest of the codebase's own reasoning for using monotonic time
+  (routers have no RTC and may step wall clock at NTP sync). The status JSON now also carries
+  `updated_mono` (`/proc/uptime`-based), the rpcd backend returns the router's current `now_mono`
+  alongside `instances`, and the GUI compares monotonic time when both are present (falling back to
+  wall time only for a status file written before this field existed).
+- **F9:** `breaker` and `down` now render distinctly in the GUI (red / amber) instead of falling
+  through to plain neutral text identical to `alive`/`monitor`. The status JSON also carries a sticky
+  `breaker_tripped` boolean, true whenever the shared circuit breaker is currently engaged for this
+  target regardless of the current cycle's transient state, so a row does not look falsely healthy in
+  the gap between down-cycles while the breaker is still refusing actions.
+- **F2:** `recent_action_count` no longer prunes the shared per-target actions file by the *calling*
+  section's own `action_window` — two sections watching the same target with different windows (e.g.
+  300 s vs 3600 s, an explicitly supported multi-instance setup) could otherwise have the shorter-window
+  section silently erase history the longer-window section still needed, undercounting its breaker.
+  Pruning is now a separate, window-independent step that caps the shared file at the most recent 200
+  entries; counting is a pure read. `max_actions` is capped at 100 to keep headroom under that cap.
 - **M1:** debounce and the circuit breaker now use monotonic time (`/proc/uptime`), so an NTP step at
   boot (routers have no RTC) can no longer reset the breaker or freeze debounce. The actions file line
   is `<mono> <wall>`; wall time is used only for display.
