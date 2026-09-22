@@ -43,14 +43,19 @@ Because the plugin runs as `root` on a central device, these principles apply:
 - **`ifwatchdog/`** — base package: UCI config (`/etc/config/ifwatchdog`), procd service, check script.
 - **`luci-app-ifwatchdog/`** — web UI (JS LuCI): interface dropdown, methods/thresholds, live status.
 - **`tests/`** — mock tests (run without OpenWrt).
-- **`docs/`** — design/spec, UAT, code-review handoff, background.
+- **`docs/`** — design/spec, how-it-works diagram, install guide, UAT, code-review handoff, background.
 
 Both packages are `noarch` (pure shell + JS) → **one build runs on every target**.
 
+## How it works
+
+A diagram and a detailed, security-focused walkthrough of the check loop and every self-lockout
+safeguard: [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md).
+
 ## Installation
 
-> Available after the review. Planned: a signed package feed (one-click in *System → Software*), with
-> `.apk` sideload as a fallback.
+No signed package feed yet — install by copying the files over SSH (verified end-to-end on real OpenWrt
+hardware). Full install/update/uninstall/rollback instructions: [`docs/INSTALL.md`](docs/INSTALL.md).
 
 ## Development & testing
 
