@@ -50,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **5D.3:** when `action=ifup` is configured but no `lan` network resolves (e.g. LAN renamed to
   `trusted`), a one-time warning notes that automatic alias protection is inactive and
   `protected_networks` should cover the management network. It warns, never rejects.
+- **CodeRabbit-01 (found via AI Deep Scan):** `valid_uint()` now rejects a leading zero (e.g. `010`,
+  `089`) instead of only checking "digits only, ≤7 chars". `action_window` is the one validated value
+  later used inside `$(( ))` (`recent_action_count`'s cutoff), and BusyBox ash's arithmetic expansion
+  reads a leading-zero literal as octal: `action_window='010'` silently became `8`, shortening the
+  circuit breaker's window below what was configured, and a non-octal digit (`action_window='089'`)
+  crashed the whole check script with `ash: arithmetic syntax error` — bypassing the documented
+  fail-safe idle path entirely. Confirmed live on the target's actual BusyBox `ash`.
 
 ### Fixed (ultrareview of the review-01 changes themselves)
 - **Regression:** the review-01 nits accidentally swapped `interval`/`max_actions`'s LuCI datatype from

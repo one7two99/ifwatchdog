@@ -44,6 +44,14 @@ valid_uint() {
 	local n="${1:-}"
 	case "$n" in
 		''|*[!0-9]*) return 1 ;;
+		# A leading zero (e.g. '010') is rejected outright: OPT_action_window is
+		# the only such value used inside $(( )) (recent_action_count), and
+		# BusyBox ash's arithmetic expansion reads a leading-zero literal as
+		# octal - '010' silently becomes 8, and a digit like '089' is not even
+		# valid octal and aborts the whole script with "arithmetic syntax
+		# error". '[ -ge/-le ]' comparisons elsewhere stay decimal regardless,
+		# but rejecting here keeps every valid_uint value unambiguous.
+		0?*) return 1 ;;
 	esac
 	# 7 digits (< ~116 days in seconds) is far beyond any sane config value and
 	# keeps every arithmetic use ($(( )), sleep, date diffs) well inside a

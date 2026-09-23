@@ -124,6 +124,10 @@ t_false "valid_uint -1"                valid_uint -1
 t_true  "valid_uint 7 digits (F7)"     valid_uint 9999999
 t_false "valid_uint 8 digits (F7)"     valid_uint 10000000
 t_false "valid_uint 20 digits (F7)"    valid_uint 12345678901234567890
+t_true  "valid_uint 0"                 valid_uint 0
+t_false "valid_uint leading zero (010, ash \$(( )) reads as octal 8)" valid_uint 010
+t_false "valid_uint leading zero, non-octal digit (089)"              valid_uint 089
+t_false "valid_uint leading zero (0300)"                              valid_uint 0300
 t_true  "valid_ifname wg0"             valid_ifname wg0
 t_true  "valid_ifname br-lan"          valid_ifname br-lan
 t_false "valid_ifname injection ;"     valid_ifname "wg0;reboot"
@@ -218,6 +222,7 @@ t_true  "lan present: valid action_network accepted" validate_config
 t_false "lan present: no alias-protection warning" grep -q "alias protection is inactive" "$LOGCAP"
 unset CFG_NET_lan; unset LOGCAP
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_action_window=60; t_false "reject action_window<300 with action" validate_config
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_action_window=0300; t_false "reject leading-zero action_window (breaker finding)" validate_config
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_max_actions=101;  t_false "reject max_actions>100 (F2)" validate_config
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_max_actions=100;  t_true  "accept max_actions=100 (F2)" validate_config
 set_base_config; OPT_method=handshake; OPT_max_handshake_age=5;  t_false "reject max_handshake_age<30 with method=handshake (F7)" validate_config
