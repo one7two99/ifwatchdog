@@ -131,7 +131,10 @@ set_base_config(){
 	OPT_max_actions=5; OPT_action_window=3600; OPT_protected=''; OPT_log=1
 	HS_AGE=''; PING_RES='n/a'; FAIL_COUNT=0
 	ACTIONS_FILE="$TMP/state/$SECTION.actions"
-	mkdir -p "$TMP/state"; rm -f "$ACTIONS_FILE"
+	# umask-independent: the host shell's ambient umask (e.g. 002 on many dev
+	# machines) would otherwise leave $TMP/state group-writable, which
+	# prepare_state_dir correctly (and intentionally) rejects.
+	( umask 077; mkdir -p "$TMP/state" ); rm -f "$ACTIONS_FILE"
 }
 
 echo "# state directory must exclude unprivileged writers"
