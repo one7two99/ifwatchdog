@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-25
+
 ### Added
 - **`--version`/`-V`:** prints `ifwatchdog <version>` and exits 0, handled before `main()` touches
   anything UCI/network-related so it works in a minimal environment with no OpenWrt tools present -
@@ -243,7 +245,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Mock test harness (`tests/run.sh`, 103 checks) — runs without OpenWrt; shellcheck-clean.
 - Project scaffold: LuCI app layout, GPL-2.0-or-later, README, docs/ (spec + background).
 
-[Unreleased]: https://github.com/one7two99/ifwatchdog/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/one7two99/ifwatchdog/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/one7two99/ifwatchdog/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/one7two99/ifwatchdog/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/one7two99/ifwatchdog/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/one7two99/ifwatchdog/compare/v0.2.0...v0.2.1

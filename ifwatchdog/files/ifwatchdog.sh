@@ -18,7 +18,7 @@ PROG=ifwatchdog
 # release - there is no build step to derive this automatically (see
 # docs/SPEC.md's Versioning section). Exposed via '--version'/'-V' so
 # openwrt/packages' CI can detect it without any OpenWrt environment.
-VERSION=0.2.3
+VERSION=0.2.4
 STATE_DIR="${IFWATCHDOG_STATE_DIR:-/var/run/ifwatchdog}"
 
 # Networks that must never be auto-restarted (self-lockout protection).

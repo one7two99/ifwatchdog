@@ -2,7 +2,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ifwatchdog
-PKG_VERSION:=0.2.3
+PKG_VERSION:=0.2.4
 PKG_RELEASE:=1
 
 # Pulled from the tagged GitHub release, not the repo's live HEAD (openwrt/packages
