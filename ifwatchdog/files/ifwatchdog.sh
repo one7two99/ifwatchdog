@@ -427,6 +427,34 @@ recent_action_count() {
 	awk -v c="$cut" '$1+0 >= c { n++ } END { print n+0 }' "$ACTIONS_FILE" 2>/dev/null
 }
 
+# Every enabled action on a target must use the same breaker policy. Check
+# current UCI state before each action, under the shared target lock, so a
+# permissive section cannot bypass a stricter section's exhausted budget.
+shared_breaker_policy_ok() {
+	local sections peer enabled action target max window seen=0
+	sections="$(uci -q -X show ifwatchdog 2>/dev/null)" || return 1
+	for peer in $(printf '%s\n' "$sections" | sed -n 's/^ifwatchdog\.\([A-Za-z0-9_]*\)=watchdog$/\1/p'); do
+		if [ "$peer" = "$SECTION" ]; then
+			seen=1
+			continue
+		fi
+		enabled="$(uget "$peer" enabled)"
+		case "$enabled" in 1|on|true|yes|enabled) : ;; *) continue ;; esac
+		action="$(uget "$peer" action)"
+		case "$action" in ifup|script) : ;; *) continue ;; esac
+		target="$(uget "$peer" action_network)"
+		valid_ifname "$target" || target="$peer"
+		[ "$target" = "${OPT_action_network:-$SECTION}" ] || continue
+		max="$(uget "$peer" max_actions)"; max="${max:-5}"
+		window="$(uget "$peer" action_window)"; window="${window:-3600}"
+		valid_uint "$max" && [ "$max" -ge 1 ] && [ "$max" -le 100 ] \
+			&& valid_uint "$window" && [ "$window" -ge 300 ] \
+			&& [ "$max" = "$OPT_max_actions" ] && [ "$window" = "$OPT_action_window" ] \
+				|| return 1
+	done
+	[ "$seen" -eq 1 ]
+}
+
 # Kills $1 and every descendant process (best-effort). A script's last
 # statement (e.g. a plain 'sleep N') is typically forked, not exec'd, by ash -
 # killing only the script's own PID would leave such a child running as an
@@ -496,6 +524,12 @@ take_action() {
 		lock_release
 		log info "debounce (under lock): $(( now_m - last_m ))s < ${OPT_debounce}s - skip"
 		ACTION_OUTCOME=debounced
+		return 0
+	fi
+	if ! shared_breaker_policy_ok; then
+		lock_release
+		log err "conflicting or unavailable breaker policy for target '${OPT_action_network:-$SECTION}' - refusing"
+		ACTION_OUTCOME=breaker
 		return 0
 	fi
 	prune_actions_file

@@ -31,7 +31,20 @@ cat > "$STUBS/uci" <<'EOF'
 #   uci -q get network.<name>.ifname    -> CFG_NET_IFNAME_<name>
 #   uci -q show network                 -> one 'network.<name>=interface' line
 #                                          per CFG_NET_*/CFG_L3_* name currently exported
+show_ids=0
+if [ "$2" = -X ]; then show_ids=1; shift; fi
 if [ "$2" = show ]; then
+	if [ "$3" = ifwatchdog ]; then
+		[ -z "${CFG_UCI_SHOW_FAIL:-}" ] || exit 1
+		for section in ${CFG_WATCHDOG_SECTIONS:-test}; do
+			if [ "$section" = cfg012345 ] && [ "$show_ids" = 0 ]; then
+				printf 'ifwatchdog.@watchdog[0]=watchdog\n'
+			else
+				printf 'ifwatchdog.%s=watchdog\n' "$section"
+			fi
+		done
+		exit 0
+	fi
 	[ "$3" = network ] || exit 0
 	{ env | sed -n 's/^CFG_NET_\([A-Za-z0-9_]*\)=.*/\1/p'
 	  env | sed -n 's/^CFG_L3_\([A-Za-z0-9_]*\)=.*/\1/p'; } \
@@ -46,6 +59,8 @@ case "$key" in
 	network.*.ifname)
 		name=${key#network.}; name=${name%.ifname}
 		eval "v=\${CFG_NET_IFNAME_${name}:-}" ;;
+	ifwatchdog.strict.*)
+		eval "v=\${CFG_STRICT_${key##*.}:-}" ;;
 	*)
 		eval "v=\${CFG_${key##*.}:-}" ;;
 esac
@@ -359,6 +374,57 @@ ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.
 : > "$IFUP_LOG"
 take_action; take_action; take_action   # 3 actions on one shared counter, cap=2
 t_eq 2 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "shared breaker caps at max_actions across sections"
+
+echo "# active sections must agree on the shared target's breaker policy"
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=0; OPT_max_actions=5; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null
+export CFG_WATCHDOG_SECTIONS='test strict' CFG_STRICT_enabled=1 CFG_STRICT_action=ifup
+export CFG_STRICT_action_network=wg0 CFG_STRICT_max_actions=1 CFG_STRICT_action_window=3600
+echo "$(( $(now_mono) - 1000 )) $(date +%s)" > "$ACTIONS_FILE"
+: > "$IFUP_LOG"; take_action
+t_eq breaker "$ACTION_OUTCOME" "permissive section refuses conflicting strict cap and window"
+t_eq 0 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "conflicting policies cannot restart the shared network"
+t_eq 1 "$(wc -l < "$ACTIONS_FILE" | tr -d ' ')" "refusal does not record an action"
+CFG_STRICT_action_window=300
+take_action
+t_eq breaker "$ACTION_OUTCOME" "cap-only conflict refuses the action"
+CFG_STRICT_max_actions=5; CFG_STRICT_action_window=3600
+take_action
+t_eq breaker "$ACTION_OUTCOME" "window-only conflict refuses the action"
+CFG_STRICT_action=script
+take_action
+t_eq breaker "$ACTION_OUTCOME" "script action sharing a target cannot bypass policy"
+CFG_STRICT_action=ifup; CFG_STRICT_max_actions=1
+export CFG_enabled=1 CFG_action=ifup CFG_action_network=wg0 CFG_max_actions=5 CFG_action_window=300
+SECTION=strict; OPT_max_actions=1; OPT_action_window=3600
+take_action
+t_eq breaker "$ACTION_OUTCOME" "stricter caller also refuses conflicting shared policy"
+SECTION=cfg012345; CFG_WATCHDOG_SECTIONS='cfg012345 strict'
+take_action
+t_eq breaker "$ACTION_OUTCOME" "anonymous UCI section also enforces shared policy"
+: > "$ACTIONS_FILE"
+take_action
+t_eq acted "$ACTION_OUTCOME" "anonymous section with matching policy may act"
+SECTION=test; unset CFG_enabled CFG_action CFG_action_network CFG_max_actions CFG_action_window
+CFG_WATCHDOG_SECTIONS='test strict'
+OPT_max_actions=1; OPT_action_window=3600
+take_action
+t_eq breaker "$ACTION_OUTCOME" "matching strict policy enforces the exhausted budget"
+echo "$(( $(now_mono) - 4000 )) $(date +%s)" > "$ACTIONS_FILE"
+take_action
+t_eq acted "$ACTION_OUTCOME" "matching policies permit an action within budget"
+OPT_max_actions=5; OPT_action_window=300
+CFG_STRICT_enabled=0
+take_action
+t_eq acted "$ACTION_OUTCOME" "disabled section's policy does not restrict action"
+CFG_STRICT_enabled=1; CFG_STRICT_action=monitor
+take_action
+t_eq acted "$ACTION_OUTCOME" "monitor section's policy does not restrict action"
+CFG_STRICT_action=ifup
+export CFG_UCI_SHOW_FAIL=1
+take_action
+t_eq breaker "$ACTION_OUTCOME" "unavailable UCI policy fails closed"
+unset CFG_UCI_SHOW_FAIL CFG_WATCHDOG_SECTIONS CFG_STRICT_enabled CFG_STRICT_action CFG_STRICT_action_network CFG_STRICT_max_actions CFG_STRICT_action_window
 
 echo "# F2: a short-window section's action must not erase actions-file history a longer-window section sharing the same target still needs"
 set_base_config; OPT_action=ifup; OPT_action_network=mixedwin; OPT_debounce=0; OPT_max_actions=100; OPT_action_window=300
