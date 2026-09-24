@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-24
+
 ### Security
 - **CodeRabbit-03 (information disclosure, CWE-378):** the status JSON's temp file (`$SECTION.json.$$`)
   is now created inside a `( umask 077; ... )` subshell wrapping the write, so it is mode 0600 from the
@@ -189,5 +191,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Mock test harness (`tests/run.sh`, 103 checks) — runs without OpenWrt; shellcheck-clean.
 - Project scaffold: LuCI app layout, GPL-2.0-or-later, README, docs/ (spec + background).
 
-[Unreleased]: https://github.com/one7two99/ifwatchdog/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/one7two99/ifwatchdog/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/one7two99/ifwatchdog/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/one7two99/ifwatchdog/compare/v0.1.0...v0.2.0
