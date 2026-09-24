@@ -154,6 +154,15 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   atomic `mv`, so it is created at mode 0600 from the first byte on — no window at the caller's ambient
   umask where a predictable temp filename could be opened by another local user before permissions were
   restricted.
+- **Every predictable-path write is symlink-safe (CWE-61):** the `.tmp`/`.$$` temp files used by
+  `write_status` and `prune_actions_file` are cleared (`rm -f`, self-healing a crash-leftover) and then
+  created inside a `set -C` (noclobber) subshell — the same O_EXCL primitive used for the lock file
+  above — so a symlink an attacker plants at the predictable path is refused, not followed; the
+  subsequent `mv` needs no such guard, since POSIX `rename()` replaces whatever sits at the destination
+  (including a symlink) without ever following it. The shared `.actions` file itself is appended to,
+  not create-and-renamed (it must persist across restarts — see above), so it cannot use the same
+  noclobber-on-create idiom; `take_action` instead refuses and reports the breaker outcome if
+  `ACTIONS_FILE` is itself a symlink before appending.
 
 ### Dependencies
 - `ping -I` → **BusyBox ping supports `-I`** (no extra package needed).

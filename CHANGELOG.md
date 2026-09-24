@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- **CodeRabbit-04 (symlink following, CWE-61):** three predictable-path writes in the shared
+  actions/status files no longer follow a pre-existing symlink planted at that path.
+  `write_status`'s `.$$` and `prune_actions_file`'s `.tmp` temp files are now cleared (`rm -f`,
+  self-healing a crash-leftover) and then created inside a `set -C` (noclobber/O_EXCL) subshell — the
+  same primitive already used for the lock file — so a symlink an attacker re-plants in the resulting
+  microsecond window is refused rather than followed; the subsequent `mv` needed no change, since
+  POSIX `rename()` already replaces whatever sits at the destination (including a symlink) without
+  following it. `take_action`'s append to the shared `.actions` file has no such rename step and must
+  persist across restarts, so instead it now refuses (reporting the circuit-breaker outcome and logging
+  once at `daemon.err`) if `ACTIONS_FILE` is itself a symlink before appending.
+- **CodeRabbit-05 (unchecked return value, CWE-252):** `tests/run.sh` now exits immediately if
+  `mktemp -d` fails or returns an empty/non-directory path, before the cleanup trap is installed or any
+  stub is written under `$STUBS` — previously a failed `mktemp -d` left `TMP` empty, collapsing
+  `$STUBS` to `/bin` and letting the `uci`/`wg`/`ping`/`ifup`/`logger` stub-writing `cat > ... <<EOF`
+  calls clobber real system binaries there.
+
 ## [0.2.1] - 2026-09-24
 
 ### Security

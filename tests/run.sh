@@ -16,7 +16,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../ifwatchdog/files/ifwatchdog.sh"
 [ -f "$SCRIPT" ] || { echo "cannot find $SCRIPT"; exit 2; }
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" && [ -n "$TMP" ] && [ -d "$TMP" ] || {
+	echo "cannot create a temp directory (mktemp -d failed) - aborting (CodeRabbit-05, CWE-252)" >&2
+	exit 2
+}
 trap 'rm -rf "$TMP"' EXIT
 STUBS="$TMP/bin"; mkdir -p "$STUBS"
 export IFWATCHDOG_STATE_DIR="$TMP/state"
@@ -582,6 +585,54 @@ if command -v stat >/dev/null 2>&1; then
 else
 	ok "(stat absent: permission check skipped)"
 fi
+
+echo "# CodeRabbit-04: predictable-path writes never follow a pre-planted symlink (CWE-61)"
+
+# --- A: write_status's .$$ temp file --------------------------------------
+set_base_config; OPT_action=monitor; HS_AGE=1; PING_RES=ok; FAIL_COUNT=0
+SF="$STATE_DIR/$SECTION.json"
+TMPF="$SF.$$"
+CANARY_A="$TMP/canary-write-status.txt"
+printf 'CANARY-UNCHANGED\n' > "$CANARY_A"
+rm -f "$SF" "$TMPF"
+ln -s "$CANARY_A" "$TMPF"                     # attacker pre-plants a symlink at the predictable tmp path
+write_status alive
+t_true "write_status: symlink target is never written through" grep -q '^CANARY-UNCHANGED$' "$CANARY_A"
+t_true "write_status: normal-path status file still written" [ -f "$SF" ]
+t_true "write_status: status JSON content correct despite the earlier symlink" grep -q '"state": "alive"' "$SF"
+t_true "write_status: status file is a regular file, not a symlink" [ ! -L "$SF" ]
+
+# --- B: prune_actions_file's .tmp file ------------------------------------
+set_base_config; OPT_action=ifup; OPT_action_network=wg0
+ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.tmp" "$ACTIONS_FILE.lock" 2>/dev/null
+printf '%s %s\n' "$(now_mono)" "$(date +%s)" > "$ACTIONS_FILE"
+CANARY_B="$TMP/canary-prune.txt"
+printf 'CANARY-UNCHANGED\n' > "$CANARY_B"
+ln -s "$CANARY_B" "$ACTIONS_FILE.tmp"         # attacker pre-plants a symlink at the predictable .tmp path
+prune_actions_file
+t_true "prune_actions_file: symlink target is never written through" grep -q '^CANARY-UNCHANGED$' "$CANARY_B"
+t_true "prune_actions_file: normal-path behavior still works" [ -f "$ACTIONS_FILE" ]
+t_true "prune_actions_file: actions file is a regular file, not a symlink" [ ! -L "$ACTIONS_FILE" ]
+rm -f "$ACTIONS_FILE"
+
+# --- C: take_action's append to ACTIONS_FILE itself -----------------------
+set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=0; OPT_max_actions=5; OPT_action_window=300
+ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null
+TARGET_C="$TMP/does-not-exist-target.txt"; rm -f "$TARGET_C"
+ln -s "$TARGET_C" "$ACTIONS_FILE"             # dangling: prune's '[ -f ] || return 0' cannot neutralize this one
+LOGCAP="$TMP/logcap"; export LOGCAP; : > "$LOGCAP"
+: > "$IFUP_LOG"; take_action
+t_eq breaker "$ACTION_OUTCOME" "take_action refuses when ACTIONS_FILE is a (dangling) symlink"
+t_eq 0 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "no ifup is run when refusing a symlinked actions file"
+t_true "refusal is logged" grep -q "refusing" "$LOGCAP"
+t_true "dangling symlink target is never created" [ ! -e "$TARGET_C" ]
+t_true "ACTIONS_FILE symlink itself is left untouched by the refusal" [ -L "$ACTIONS_FILE" ]
+unset LOGCAP
+rm -f "$ACTIONS_FILE"                          # clear the symlink -> normal path
+: > "$IFUP_LOG"; take_action
+t_eq acted "$ACTION_OUTCOME" "take_action acts normally once ACTIONS_FILE is a real file again"
+t_eq 1 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "ifup runs on the normal (non-symlink) path"
+t_true "ACTIONS_FILE is a regular file after a normal action" [ ! -L "$ACTIONS_FILE" ]
 
 echo "# F9: breaker_tripped is sticky - true even when the current cycle's transient state looks healthy"
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=1; OPT_action_window=300

@@ -412,9 +412,19 @@ ACTIONS_FILE_KEEP=200
 # lock.
 prune_actions_file() {
 	[ -f "$ACTIONS_FILE" ] || return 0
+	# .tmp is short-lived (removed by the mv below); clear any leftover from a
+	# crashed prior run so the noclobber create below self-heals instead of
+	# wedging, while still refusing to write through a symlink an attacker
+	# re-plants in the resulting microsecond window (CodeRabbit finding, CWE-61).
+	rm -f "$ACTIONS_FILE.tmp" 2>/dev/null
+	if ( set -C
 	awk -v keep="$ACTIONS_FILE_KEEP" \
 		'{ line[NR]=$0 } END { s=(NR>keep)?NR-keep+1:1; for (i=s;i<=NR;i++) print line[i] }' \
-		"$ACTIONS_FILE" > "$ACTIONS_FILE.tmp" 2>/dev/null && mv "$ACTIONS_FILE.tmp" "$ACTIONS_FILE"
+		"$ACTIONS_FILE" > "$ACTIONS_FILE.tmp" ) 2>/dev/null; then
+		mv "$ACTIONS_FILE.tmp" "$ACTIONS_FILE"
+	else
+		log err "refusing: could not create '$ACTIONS_FILE.tmp' exclusively (symlink race or write error) - actions file not pruned"
+	fi
 }
 
 # Counts entries within the last OPT_action_window seconds (by monotonic
@@ -547,6 +557,17 @@ take_action() {
 		return 0
 	fi
 	BREAKER_LOGGED=0
+	# prune_actions_file() above already neutralizes an ACTIONS_FILE that was a
+	# symlink to an EXISTING target (its mv/rename never follows a symlink); the
+	# case that survives to here is a *dangling* symlink, which prune's
+	# '[ -f ] || return 0' skips without touching. Refuse rather than let '>>'
+	# silently create/write through it (CodeRabbit finding, CWE-61).
+	if [ -L "$ACTIONS_FILE" ]; then
+		lock_release
+		log err "refusing: '$ACTIONS_FILE' is a symlink - not appending"
+		ACTION_OUTCOME=breaker
+		return 0
+	fi
 	echo "$now_m $(date +%s)" >> "$ACTIONS_FILE"
 	lock_release
 	case "$OPT_action" in
@@ -595,11 +616,17 @@ write_status() {
 	# interval drives the GUI staleness threshold; unvalidated on the invalid path.
 	case "${OPT_interval:-}" in ''|*[!0-9]*) iv=null ;; *) iv="$OPT_interval" ;; esac
 	bt=false; breaker_is_tripped && bt=true
+	# tmp is PID-named and normally short-lived (removed by the mv below); clear
+	# any leftover from a crashed prior run so the noclobber create below
+	# self-heals instead of permanently wedging this PID, while still refusing
+	# to write through a symlink an attacker re-plants in the resulting
+	# microsecond window (set -C = O_EXCL; CodeRabbit finding, CWE-61).
+	rm -f "$tmp" 2>/dev/null
 	# umask 077 in a subshell so the temp file is created at mode 0600 by the
 	# same syscall that first writes to it - no window where a
 	# default-umask-created file is briefly group/world readable before a
 	# later chmod restricts it (CodeRabbit finding, CWE-378).
-	( umask 077
+	if ( umask 077; set -C
 	cat > "$tmp" <<-JSON
 	{
 	  "section": "$(json_str "$SECTION")",
@@ -618,8 +645,11 @@ write_status() {
 	  "updated_mono": $(now_mono)
 	}
 	JSON
-	)
-	mv "$tmp" "$f"
+	) 2>/dev/null; then
+		mv "$tmp" "$f"
+	else
+		log err "refusing: could not create '$tmp' exclusively (symlink race or write error) - status not updated"
+	fi
 }
 
 # --- main loop -------------------------------------------------------------
