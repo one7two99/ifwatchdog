@@ -21,7 +21,7 @@ PKG_RELEASE:=1
 # silent-wrong-source failure mode, only a loud one.
 PKG_SOURCE:=v$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/one7two99/ifwatchdog/archive/refs/tags/
-PKG_HASH:=1b5235b8ea96e8d57946bd9b4795319b9eb1c8d3ff4e19463dee6a77b3b888ad
+PKG_HASH:=af2c9f07b7bf9f9d24a4ba570e57187129defc344439afb54ba21a04be2b24a5
 
 PKG_MAINTAINER:=one7two99
 PKG_LICENSE:=GPL-2.0-or-later
