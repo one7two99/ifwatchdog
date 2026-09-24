@@ -222,6 +222,13 @@ Modern LuCI = **client-side JS** (`form`, `network`, `ubus`), not the old Lua CB
 - **SemVer** in `PKG_VERSION` (start `0.1.0`), release = git tag; `PKG_RELEASE` for rebuilds without a
   source change. `luci-app-*` has its own version and depends on `ifwatchdog` via `DEPENDS`.
 - `CHANGELOG.md` follows Keep a Changelog.
+- **`ifwatchdog/Makefile` pulls from the tagged GitHub release** (`PKG_SOURCE_URL`/`PKG_SOURCE`/`PKG_HASH`
+  against `github.com/one7two99/ifwatchdog/archive/refs/tags/vX.Y.Z.tar.gz`), not the repo's live HEAD —
+  required by `openwrt/packages`' contribution guidelines. On every version bump: push the matching
+  `vX.Y.Z` tag **first**, then recompute `PKG_HASH` against that tag's real archive and update
+  `PKG_VERSION`/`PKG_HASH` together (the build fails closed on a hash mismatch, so a forgotten update is
+  loud, not silent). `luci-app-ifwatchdog/Makefile` is unaffected — LuCI apps are conventionally vendored
+  directly in whichever repo hosts them, no `PKG_SOURCE` needed.
 
 ---
 
