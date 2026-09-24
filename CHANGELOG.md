@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-24
+
 ### Security
 - **CodeRabbit-04 (symlink following, CWE-61):** three predictable-path writes in the shared
   actions/status files no longer follow a pre-existing symlink planted at that path.
@@ -208,6 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Mock test harness (`tests/run.sh`, 103 checks) — runs without OpenWrt; shellcheck-clean.
 - Project scaffold: LuCI app layout, GPL-2.0-or-later, README, docs/ (spec + background).
 
-[Unreleased]: https://github.com/one7two99/ifwatchdog/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/one7two99/ifwatchdog/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/one7two99/ifwatchdog/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/one7two99/ifwatchdog/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/one7two99/ifwatchdog/compare/v0.1.0...v0.2.0
