@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-24
+
 ### Security
 - **C1 (Critical):** reject a leading `-` in interface/network values (`valid_ifname`/`valid_host`),
   so an `action_network` like `-a` can no longer become `ifup -a` (bring up all interfaces) → instant
@@ -57,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   circuit breaker's window below what was configured, and a non-octal digit (`action_window='089'`)
   crashed the whole check script with `ash: arithmetic syntax error` — bypassing the documented
   fail-safe idle path entirely. Confirmed live on the target's actual BusyBox `ash`.
+- **CodeRabbit-02:** enabled `ifup`/`script` sections sharing an `action_network` target must now agree
+  on `max_actions` and `action_window` (`shared_breaker_policy_ok`, checked under the shared lock before
+  every action). Previously each section counted the shared actions file against only its *own*
+  configured cap/window, so a permissive section (higher cap or shorter window) could effectively
+  bypass a stricter section's intended rate limit on the same shared target. A conflicting or unreadable
+  peer policy now refuses the action (fail-closed) instead.
 
 ### Fixed (ultrareview of the review-01 changes themselves)
 - **Regression:** the review-01 nits accidentally swapped `interval`/`max_actions`'s LuCI datatype from
@@ -174,4 +182,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Mock test harness (`tests/run.sh`, 103 checks) — runs without OpenWrt; shellcheck-clean.
 - Project scaffold: LuCI app layout, GPL-2.0-or-later, README, docs/ (spec + background).
 
-[Unreleased]: https://github.com/one7two99/ifwatchdog/compare/main...HEAD
+[Unreleased]: https://github.com/one7two99/ifwatchdog/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/one7two99/ifwatchdog/compare/v0.1.0...v0.2.0
