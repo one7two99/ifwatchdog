@@ -128,6 +128,9 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   "Save & Apply"); the monotonic stamps stay valid across a restart and entries age out via
   `action_window`. The breaker resets only on **reboot** (tmpfs is cleared), which is the intended reset.
   `debounce`/`action_window` have floors (30 s / 300 s) when an action is configured.
+  Enabled sections sharing a target must use identical `max_actions` and `action_window` values;
+  conflicting or unreadable policies refuse the action rather than letting a permissive section
+  bypass another section's breaker.
 - **The shared-target lock is an O_EXCL file create** (`set -C; : > act-<target>.actions.lock`):
   O_EXCL is the POSIX atomic-create primitive and needs no cleanup semantics beyond `rm`. The prune +
   count + append run under this lock, and `take_action` re-checks debounce **under** the lock, so two
