@@ -14,6 +14,11 @@
 set -u
 
 PROG=ifwatchdog
+# Must be kept in sync with PKG_VERSION in ifwatchdog/Makefile on every
+# release - there is no build step to derive this automatically (see
+# docs/SPEC.md's Versioning section). Exposed via '--version'/'-V' so
+# openwrt/packages' CI can detect it without any OpenWrt environment.
+VERSION=0.2.3
 STATE_DIR="${IFWATCHDOG_STATE_DIR:-/var/run/ifwatchdog}"
 
 # Networks that must never be auto-restarted (self-lockout protection).
@@ -795,6 +800,14 @@ main() {
 		wait "$!"
 	done
 }
+
+# Handled before the IFWATCHDOG_TEST guard and before main() touches anything
+# UCI/network-related, so it works in a minimal environment with no OpenWrt
+# tools present - openwrt/packages' CI runs installed executables with
+# common flags (--version/-V/--help) to detect PKG_VERSION automatically.
+case "${1:-}" in
+	-V|--version) printf '%s %s\n' "$PROG" "$VERSION"; exit 0 ;;
+esac
 
 if [ "${IFWATCHDOG_TEST:-0}" != "1" ]; then
 	main "$@"

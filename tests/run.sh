@@ -585,6 +585,18 @@ t_false "cleanup falls back to \$! when no script action is in flight" kill -0 "
 echo "# low-severity hardening"
 IFWATCHDOG_TEST=0 sh "$SCRIPT" 'bad;name' >/dev/null 2>&1; t_eq 2 "$?" "invalid section name exits 2"
 IFWATCHDOG_TEST=0 sh "$SCRIPT" '' >/dev/null 2>&1;         t_eq 2 "$?" "empty section name exits 2"
+
+echo "# --version/-V (openwrt/packages CI auto-detects PKG_VERSION via a common flag)"
+PKG_VER="$(sed -n 's/^PKG_VERSION:=//p' "$HERE/../ifwatchdog/Makefile")"
+VER_OUT="$(IFWATCHDOG_TEST=0 sh "$SCRIPT" --version 2>&1)"; rc=$?
+t_eq 0 "$rc" "'--version' exits 0 (not main()'s usage-error path)"
+t_true "'--version' output contains the Makefile's PKG_VERSION ($PKG_VER)" \
+	grep -qF "$PKG_VER" <<-EOF
+	$VER_OUT
+	EOF
+V_OUT="$(IFWATCHDOG_TEST=0 sh "$SCRIPT" -V 2>&1)"; rc=$?
+t_eq 0 "$rc" "'-V' exits 0"
+t_eq "$VER_OUT" "$V_OUT" "'-V' and '--version' print the same thing"
 # a failing ifup is still recorded as an attempted action (does not crash)
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=5; OPT_action_window=300
 ACTIONS_FILE="$TMP/state/act-fail.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`--version`/`-V`:** prints `ifwatchdog <version>` and exits 0, handled before `main()` touches
+  anything UCI/network-related so it works in a minimal environment with no OpenWrt tools present -
+  needed for `openwrt/packages`' CI, which auto-detects `PKG_VERSION` by running installed executables
+  with common flags (`--version`/`-V`/`--help`). The version string is a plain `VERSION=` shell variable
+  near the top of `ifwatchdog.sh`, kept in sync with `PKG_VERSION` in `ifwatchdog/Makefile` by hand on
+  every release (no build/template step exists to derive it automatically - see `docs/SPEC.md`'s
+  Versioning section).
+
+### Build
+- `ifwatchdog/Makefile` now pulls from the tagged GitHub release (`PKG_SOURCE_URL`/`PKG_SOURCE`/
+  `PKG_HASH` against `github.com/one7two99/ifwatchdog/archive/refs/tags/vX.Y.Z.tar.gz`) instead of
+  installing directly out of the local `./files/` - required by `openwrt/packages`' contribution
+  guidelines ahead of submitting there. `luci-app-ifwatchdog/Makefile` is unaffected.
+- Added a GitHub Actions CI workflow (`.github/workflows/ci.yml`): shellcheck (ash dialect) and the full
+  `tests/run.sh` suite run on every push to `main` and every pull request.
+
 ## [0.2.3] - 2026-09-24
 
 ### Security
