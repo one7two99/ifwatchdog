@@ -150,6 +150,10 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   `breaker_tripped` are red.
   On service start the per-process **status** files and any leftover **lock** file (an O_EXCL regular
   file, removed with `rm -f`) are cleared; the per-target `.actions` breaker files are kept (see above).
+  The status file is written to a `.$$` temp path inside a `( umask 077; ... )` subshell before the
+  atomic `mv`, so it is created at mode 0600 from the first byte on — no window at the caller's ambient
+  umask where a predictable temp filename could be opened by another local user before permissions were
+  restricted.
 
 ### Dependencies
 - `ping -I` → **BusyBox ping supports `-I`** (no extra package needed).

@@ -595,6 +595,11 @@ write_status() {
 	# interval drives the GUI staleness threshold; unvalidated on the invalid path.
 	case "${OPT_interval:-}" in ''|*[!0-9]*) iv=null ;; *) iv="$OPT_interval" ;; esac
 	bt=false; breaker_is_tripped && bt=true
+	# umask 077 in a subshell so the temp file is created at mode 0600 by the
+	# same syscall that first writes to it - no window where a
+	# default-umask-created file is briefly group/world readable before a
+	# later chmod restricts it (CodeRabbit finding, CWE-378).
+	( umask 077
 	cat > "$tmp" <<-JSON
 	{
 	  "section": "$(json_str "$SECTION")",
@@ -613,7 +618,7 @@ write_status() {
 	  "updated_mono": $(now_mono)
 	}
 	JSON
-	chmod 0600 "$tmp" 2>/dev/null
+	)
 	mv "$tmp" "$f"
 }
 

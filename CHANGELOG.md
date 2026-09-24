@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- **CodeRabbit-03 (information disclosure, CWE-378):** the status JSON's temp file (`$SECTION.json.$$`)
+  is now created inside a `( umask 077; ... )` subshell wrapping the write, so it is mode 0600 from the
+  first byte written instead of being created at the default umask and `chmod 0600`'d only afterward —
+  closing the window where a local user could open the predictable temp path and retain a readable file
+  descriptor across the chmod.
+
 ## [0.2.0] - 2026-09-24
 
 ### Security

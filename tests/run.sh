@@ -573,6 +573,16 @@ else
 	no "status JSON written"
 fi
 
+echo "# CodeRabbit-03: status JSON is created at mode 0600, no window at the default umask (CWE-378)"
+rm -f "$SF"
+write_status alive
+if command -v stat >/dev/null 2>&1; then
+	MODE="$(stat -c '%a' "$SF" 2>/dev/null || stat -f '%Lp' "$SF" 2>/dev/null)"
+	t_eq 600 "$MODE" "status JSON written at mode 0600"
+else
+	ok "(stat absent: permission check skipped)"
+fi
+
 echo "# F9: breaker_tripped is sticky - true even when the current cycle's transient state looks healthy"
 set_base_config; OPT_action=ifup; OPT_action_network=wg0; OPT_debounce=30; OPT_max_actions=1; OPT_action_window=300
 ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.lock" 2>/dev/null
