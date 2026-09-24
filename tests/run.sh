@@ -400,9 +400,11 @@ SECTION=strict; OPT_max_actions=1; OPT_action_window=3600
 take_action
 t_eq breaker "$ACTION_OUTCOME" "stricter caller also refuses conflicting shared policy"
 SECTION=cfg012345; CFG_WATCHDOG_SECTIONS='cfg012345 strict'
+: > "$ACTIONS_FILE"   # isolate the policy check from the ordinary count-based breaker
+OPT_max_actions=2
 take_action
 t_eq breaker "$ACTION_OUTCOME" "anonymous UCI section also enforces shared policy"
-: > "$ACTIONS_FILE"
+OPT_max_actions=1
 take_action
 t_eq acted "$ACTION_OUTCOME" "anonymous section with matching policy may act"
 SECTION=test; unset CFG_enabled CFG_action CFG_action_network CFG_max_actions CFG_action_window
