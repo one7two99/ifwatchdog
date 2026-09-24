@@ -38,6 +38,45 @@ log() {
 	if [ -t 2 ]; then printf '%s: [%s] %s\n' "$lvl" "${SECTION:-?}" "$*" >&2; fi
 }
 
+# Use only a state directory that another user cannot replace or write into.
+# Resolve symlinks once, then use the physical path for every state operation.
+# A sticky parent owned by root or this process (such as /tmp) is safe when
+# its child belongs to this process; other writable parents are not.
+prepare_state_dir() {
+	local dir child parent writable sticky owned uid
+	case "$STATE_DIR" in
+		/var/run/ifwatchdog) ( umask 077; mkdir -p "$STATE_DIR" ) 2>/dev/null || return 1 ;;
+		/*) [ -d "$STATE_DIR" ] || return 1 ;; # overrides must be pre-created
+		*) return 1 ;;
+	esac
+	dir="$(cd -P "$STATE_DIR" 2>/dev/null && pwd -P)" || return 1
+	# /var/run may be a system-owned symlink on OpenWrt. For overrides,
+	# disallow symlinks in the supplied path so an attacker cannot select an
+	# otherwise trusted directory by planting a link before startup.
+	[ "$STATE_DIR" = /var/run/ifwatchdog ] || [ "$STATE_DIR" = "$dir" ] || return 1
+	[ "$dir" != / ] || return 1
+	uid="$(id -u)" || return 1
+	# find does not follow a final symlink; test -O would follow it.
+	owned="$(find "$dir" -maxdepth 0 -type d -user "$uid" -print 2>/dev/null)" || return 1
+	[ -n "$owned" ] || return 1
+	writable="$(find "$dir" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null)" || return 1
+	[ -z "$writable" ] || return 1
+	child="$dir"
+	while [ "$child" != / ]; do
+		parent="${child%/*}"; [ -n "$parent" ] || parent=/
+		owned="$(find "$parent" -maxdepth 0 -type d \( -user 0 -o -user "$uid" \) -print 2>/dev/null)" || return 1
+		[ -n "$owned" ] || return 1
+		writable="$(find "$parent" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null)" || return 1
+		if [ -n "$writable" ]; then
+			sticky="$(find "$parent" -maxdepth 0 -perm -1000 -print 2>/dev/null)" || return 1
+			owned="$(find "$child" -maxdepth 0 -type d -user "$uid" -print 2>/dev/null)" || return 1
+			[ -n "$sticky" ] && [ -n "$owned" ] || return 1
+		fi
+		child="$parent"
+	done
+	STATE_DIR="$dir"
+}
+
 # --- validation ------------------------------------------------------------
 
 valid_uint() {
@@ -412,18 +451,16 @@ ACTIONS_FILE_KEEP=200
 # lock.
 prune_actions_file() {
 	[ -f "$ACTIONS_FILE" ] || return 0
-	# .tmp is short-lived (removed by the mv below); clear any leftover from a
-	# crashed prior run so the noclobber create below self-heals instead of
-	# wedging, while still refusing to write through a symlink an attacker
-	# re-plants in the resulting microsecond window (CodeRabbit finding, CWE-61).
-	rm -f "$ACTIONS_FILE.tmp" 2>/dev/null
-	if ( set -C
+	local tmp
+	tmp="$(umask 077; mktemp "$ACTIONS_FILE.XXXXXXXX")" || { log err "could not create actions temp file"; return 1; }
+	if (
 	awk -v keep="$ACTIONS_FILE_KEEP" \
 		'{ line[NR]=$0 } END { s=(NR>keep)?NR-keep+1:1; for (i=s;i<=NR;i++) print line[i] }' \
-		"$ACTIONS_FILE" > "$ACTIONS_FILE.tmp" ) 2>/dev/null; then
-		mv "$ACTIONS_FILE.tmp" "$ACTIONS_FILE"
+		"$ACTIONS_FILE" > "$tmp" ) 2>/dev/null && mv "$tmp" "$ACTIONS_FILE"; then
+		:
 	else
-		log err "refusing: could not create '$ACTIONS_FILE.tmp' exclusively (symlink race or write error) - actions file not pruned"
+		rm -f "$tmp"
+		log err "refusing: could not prune '$ACTIONS_FILE' - actions file not pruned"
 	fi
 }
 
@@ -609,24 +646,15 @@ breaker_is_tripped() {
 
 write_status() {
 	local state="$1" f tmp age iv bt
-	mkdir -p "$STATE_DIR" 2>/dev/null
 	f="$STATE_DIR/$SECTION.json"
-	tmp="$f.$$"
 	case "${HS_AGE:-}" in ''|*[!0-9]*) age=null ;; *) age="$HS_AGE" ;; esac
 	# interval drives the GUI staleness threshold; unvalidated on the invalid path.
 	case "${OPT_interval:-}" in ''|*[!0-9]*) iv=null ;; *) iv="$OPT_interval" ;; esac
 	bt=false; breaker_is_tripped && bt=true
-	# tmp is PID-named and normally short-lived (removed by the mv below); clear
-	# any leftover from a crashed prior run so the noclobber create below
-	# self-heals instead of permanently wedging this PID, while still refusing
-	# to write through a symlink an attacker re-plants in the resulting
-	# microsecond window (set -C = O_EXCL; CodeRabbit finding, CWE-61).
-	rm -f "$tmp" 2>/dev/null
-	# umask 077 in a subshell so the temp file is created at mode 0600 by the
-	# same syscall that first writes to it - no window where a
-	# default-umask-created file is briefly group/world readable before a
-	# later chmod restricts it (CodeRabbit finding, CWE-378).
-	if ( umask 077; set -C
+	# mktemp creates the file exclusively at mode 0600. The checked state
+	# directory prevents another user from replacing it before the write.
+	tmp="$(umask 077; mktemp "$f.XXXXXXXX")" || { log err "could not create status temp file"; return 1; }
+	if (
 	cat > "$tmp" <<-JSON
 	{
 	  "section": "$(json_str "$SECTION")",
@@ -645,10 +673,11 @@ write_status() {
 	  "updated_mono": $(now_mono)
 	}
 	JSON
-	) 2>/dev/null; then
-		mv "$tmp" "$f"
+	) 2>/dev/null && mv "$tmp" "$f"; then
+		:
 	else
-		log err "refusing: could not create '$tmp' exclusively (symlink race or write error) - status not updated"
+		rm -f "$tmp"
+		log err "could not update status '$f'"
 	fi
 }
 
@@ -686,7 +715,7 @@ main() {
 	case "$SECTION" in
 		''|*[!A-Za-z0-9_]*) echo "usage: $0 <section> (invalid section name)" >&2; exit 2 ;;
 	esac
-	mkdir -p "$STATE_DIR" 2>/dev/null
+	prepare_state_dir || { log crit "unsafe or unavailable state directory '$STATE_DIR' - safe idle"; safe_idle; }
 
 	load_config
 	# Only a validated name may become part of a path (validate_config still

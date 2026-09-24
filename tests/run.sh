@@ -134,6 +134,25 @@ set_base_config(){
 	mkdir -p "$TMP/state"; rm -f "$ACTIONS_FILE"
 }
 
+echo "# state directory must exclude unprivileged writers"
+set_base_config
+t_true "private state directory accepted" prepare_state_dir
+t_eq "$(cd "$TMP/state" && pwd -P)" "$STATE_DIR" "state directory uses its physical path"
+chmod 0777 "$STATE_DIR"
+t_false "world-writable state directory rejected" prepare_state_dir
+chmod 0755 "$STATE_DIR"
+mkdir -p "$TMP/writable-parent/state"
+chmod 0777 "$TMP/writable-parent"
+STATE_DIR="$TMP/writable-parent/state"
+t_false "writable non-sticky parent rejected" prepare_state_dir
+chmod 0700 "$TMP/writable-parent"
+STATE_DIR=relative-state
+t_false "relative state directory rejected" prepare_state_dir
+ln -s "$TMP/state" "$TMP/state-link"
+STATE_DIR="$TMP/state-link"
+t_false "symlinked override path rejected" prepare_state_dir
+STATE_DIR="$TMP/state"
+
 echo "# validators"
 t_true  "valid_uint 5"                 valid_uint 5
 t_false "valid_uint empty"             valid_uint ""
@@ -295,6 +314,7 @@ t_eq 0 "$(wc -l < "$IFUP_LOG" | tr -d ' ')" "unmeasurable handshake never trigge
 echo "# main() entry behaviour (no respawn storm on any 'enabled' spelling)"
 export CFG_interface=wg0 CFG_action=monitor CFG_method=ping CFG_ping_host=1.1.1.1
 export IFWATCHDOG_STATE_DIR_SAVE="$IFWATCHDOG_STATE_DIR"
+mkdir -p "$TMP/state-main"
 export IFWATCHDOG_STATE_DIR="$TMP/state-main"
 for v in 1 on true yes enabled 0 '' bogus; do
 	export CFG_enabled="$v"
@@ -307,6 +327,18 @@ for v in 1 on true yes enabled 0 '' bogus; do
 	fi
 	t_eq 124 "$rc" "enabled='$v' does not exit on its own (rc=124=still running)"
 done
+mkdir -p "$TMP/unsafe-main"
+chmod 0777 "$TMP/unsafe-main"
+export IFWATCHDOG_STATE_DIR="$TMP/unsafe-main"
+if command -v timeout >/dev/null 2>&1; then
+	IFWATCHDOG_TEST=0 timeout 2 sh "$SCRIPT" test >/dev/null 2>&1; rc=$?
+else
+	( IFWATCHDOG_TEST=0 sh "$SCRIPT" test >/dev/null 2>&1 ) & p=$!
+	sleep 2
+	if kill -0 "$p" 2>/dev/null; then kill -TERM "$p" 2>/dev/null; rc=124; else wait "$p"; rc=$?; fi
+fi
+t_eq 124 "$rc" "unsafe state directory idles instead of exiting"
+t_false "unsafe state directory receives no privileged status write" [ -e "$TMP/unsafe-main/test.json" ]
 unset CFG_enabled CFG_interface CFG_action CFG_method CFG_ping_host
 export IFWATCHDOG_STATE_DIR="$IFWATCHDOG_STATE_DIR_SAVE"; unset IFWATCHDOG_STATE_DIR_SAVE
 
@@ -588,7 +620,7 @@ fi
 
 echo "# CodeRabbit-04: predictable-path writes never follow a pre-planted symlink (CWE-61)"
 
-# --- A: write_status's .$$ temp file --------------------------------------
+# --- A: previously predictable status temp path ---------------------------
 set_base_config; OPT_action=monitor; HS_AGE=1; PING_RES=ok; FAIL_COUNT=0
 SF="$STATE_DIR/$SECTION.json"
 TMPF="$SF.$$"
@@ -601,8 +633,14 @@ t_true "write_status: symlink target is never written through" grep -q '^CANARY-
 t_true "write_status: normal-path status file still written" [ -f "$SF" ]
 t_true "write_status: status JSON content correct despite the earlier symlink" grep -q '"state": "alive"' "$SF"
 t_true "write_status: status file is a regular file, not a symlink" [ ! -L "$SF" ]
+t_true "write_status: predictable symlink is untouched" [ -L "$TMPF" ]
+rm -f "$TMPF"
+ln -s /dev/null "$TMPF"
+write_status alive
+t_true "write_status: planted device symlink is untouched" [ -L "$TMPF" ]
+t_true "write_status: status remains a regular file with a device symlink planted" [ -f "$SF" ]
 
-# --- B: prune_actions_file's .tmp file ------------------------------------
+# --- B: previously predictable actions temp path --------------------------
 set_base_config; OPT_action=ifup; OPT_action_network=wg0
 ACTIONS_FILE="$TMP/state/act-wg0.actions"; rm -f "$ACTIONS_FILE" "$ACTIONS_FILE.tmp" "$ACTIONS_FILE.lock" 2>/dev/null
 printf '%s %s\n' "$(now_mono)" "$(date +%s)" > "$ACTIONS_FILE"
@@ -613,6 +651,7 @@ prune_actions_file
 t_true "prune_actions_file: symlink target is never written through" grep -q '^CANARY-UNCHANGED$' "$CANARY_B"
 t_true "prune_actions_file: normal-path behavior still works" [ -f "$ACTIONS_FILE" ]
 t_true "prune_actions_file: actions file is a regular file, not a symlink" [ ! -L "$ACTIONS_FILE" ]
+t_true "prune_actions_file: predictable symlink is untouched" [ -L "$ACTIONS_FILE.tmp" ]
 rm -f "$ACTIONS_FILE"
 
 # --- C: take_action's append to ACTIONS_FILE itself -----------------------
