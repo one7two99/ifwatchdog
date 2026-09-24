@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-24
+
+### Security
+- **CodeRabbit-06 (symlink following / directory validation, CWE-61):** closes the state-directory half
+  of the CWE-61 finding that `[0.2.2]`'s CodeRabbit-04 fix deliberately left open. A new
+  `prepare_state_dir()` validates `STATE_DIR` (the default `/var/run/ifwatchdog` and any
+  `IFWATCHDOG_STATE_DIR` override) before startup: it must be root-owned with no group/other-write bit,
+  and every parent directory up to `/` must be either not group/other-writable or, if it is (e.g. a
+  shared `/tmp`), have the sticky bit set with the child itself still owned by the daemon — the standard
+  shared-tmp-safe pattern. Startup safe-idles (logging once) rather than running against an untrusted
+  directory. Also upgrades `write_status`'s and `prune_actions_file`'s temp-file creation from `[0.2.2]`'s
+  `set -C`(noclobber)+`rm -f` idiom to `mktemp` with a random suffix, which removes the predictable-path
+  attack surface entirely (no symlink to pre-plant, rather than merely refusing to follow one that's
+  already there). Verified against the real router's actual directory chain (`/var -> tmp`, a real
+  OpenWrt symlink) before merging, since a false rejection here would take the watchdog down.
+
 ## [0.2.2] - 2026-09-24
 
 ### Security
@@ -210,7 +226,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Mock test harness (`tests/run.sh`, 103 checks) — runs without OpenWrt; shellcheck-clean.
 - Project scaffold: LuCI app layout, GPL-2.0-or-later, README, docs/ (spec + background).
 
-[Unreleased]: https://github.com/one7two99/ifwatchdog/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/one7two99/ifwatchdog/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/one7two99/ifwatchdog/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/one7two99/ifwatchdog/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/one7two99/ifwatchdog/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/one7two99/ifwatchdog/compare/v0.1.0...v0.2.0
