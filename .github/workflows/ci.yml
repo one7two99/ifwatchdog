@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: shellcheck + test suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install BusyBox (for a real ash syntax check against the actual target shell)
+        run: sudo apt-get update && sudo apt-get install -y busybox shellcheck
+
+      - name: shellcheck ifwatchdog.sh (ash dialect - the daemon's actual target shell)
+        run: shellcheck -s ash ifwatchdog/files/ifwatchdog.sh
+
+      - name: shellcheck tests/run.sh
+        run: shellcheck tests/run.sh
+
+      - name: BusyBox ash syntax check
+        run: busybox ash -n ifwatchdog/files/ifwatchdog.sh
+
+      - name: Run test suite (tests/run.sh)
+        run: sh tests/run.sh

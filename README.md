@@ -1,5 +1,7 @@
 # ifwatchdog
 
+[![CI](https://github.com/one7two99/ifwatchdog/actions/workflows/ci.yml/badge.svg)](https://github.com/one7two99/ifwatchdog/actions/workflows/ci.yml)
+
 **Interface health watchdog for OpenWrt** — watches a network interface and restarts it when it
 *silently* stalls. Ships with a LuCI web UI (pick the interface from a dropdown).
 
