@@ -118,7 +118,7 @@ This is usually the first question a skeptical reviewer asks, so it gets its own
 
 ## Where the numbers come from
 
-Nothing above is asserted from reading the code alone: `tests/run.sh` (146 automated checks, run without
+Nothing above is asserted from reading the code alone: `tests/run.sh` (194 automated checks, run without
 any OpenWrt device) exercises every branch in this document directly against the real script — the
 denylist table above, the debounce/breaker math, the fail-safe idle paths, and the script-kill-tree
 behavior all have a corresponding test. The same behavior was then re-verified against a **real** OpenWrt

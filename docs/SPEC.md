@@ -150,19 +150,26 @@ with `command /usr/libexec/ifwatchdog.sh <section>`, `respawn`, a reload trigger
   `breaker_tripped` are red.
   On service start the per-process **status** files and any leftover **lock** file (an O_EXCL regular
   file, removed with `rm -f`) are cleared; the per-target `.actions` breaker files are kept (see above).
-  The status file is written to a `.$$` temp path inside a `( umask 077; ... )` subshell before the
-  atomic `mv`, so it is created at mode 0600 from the first byte on — no window at the caller's ambient
-  umask where a predictable temp filename could be opened by another local user before permissions were
-  restricted.
-- **Every predictable-path write is symlink-safe (CWE-61):** the `.tmp`/`.$$` temp files used by
-  `write_status` and `prune_actions_file` are cleared (`rm -f`, self-healing a crash-leftover) and then
-  created inside a `set -C` (noclobber) subshell — the same O_EXCL primitive used for the lock file
-  above — so a symlink an attacker plants at the predictable path is refused, not followed; the
-  subsequent `mv` needs no such guard, since POSIX `rename()` replaces whatever sits at the destination
-  (including a symlink) without ever following it. The shared `.actions` file itself is appended to,
-  not create-and-renamed (it must persist across restarts — see above), so it cannot use the same
-  noclobber-on-create idiom; `take_action` instead refuses and reports the breaker outcome if
-  `ACTIONS_FILE` is itself a symlink before appending.
+  The status file is written to a `mktemp`-created temp path (`$f.XXXXXXXX`, a random suffix, not a
+  predictable one) inside a `( umask 077; mktemp ... )` command substitution before the atomic `mv`, so
+  it is created at mode 0600 from the first byte on and its name cannot be guessed in advance.
+- **Every predictable-path write is symlink-safe (CWE-61):** `write_status` and `prune_actions_file`
+  create their temp files with `mktemp "$f.XXXXXXXX"` — a random suffix, not the process PID — so there
+  is no predictable path left for a local attacker to pre-plant a symlink at in the first place; the
+  subsequent `mv` needs no extra guard either way, since POSIX `rename()` replaces whatever sits at the
+  destination (including a symlink) without ever following it. The shared `.actions` file itself is
+  appended to, not create-and-renamed (it must persist across restarts — see above), so it cannot use
+  the same mktemp-on-create idiom; `take_action` instead refuses and reports the breaker outcome if
+  `ACTIONS_FILE` is itself a symlink before appending (the one case a `mv`-based prune can't neutralize
+  on its own — a *dangling* symlink, which `prune_actions_file`'s own `[ -f ]` guard skips untouched).
+- **The state directory itself is validated before every start (`prepare_state_dir`, CWE-61):** the
+  default `/var/run/ifwatchdog` and any `IFWATCHDOG_STATE_DIR` override (test-harness only — never read
+  by the real init script) must resolve to a directory owned by the daemon with no group/other-write
+  bit, and every parent directory up to `/` must be either not group/other-writable or, if it is (e.g. a
+  shared `/tmp`), have the sticky bit set with the child still owned by the daemon — the standard
+  shared-tmp-safe pattern real OpenWrt hardware needs, since `/var/run` is itself commonly a symlink to
+  a shared `/tmp`. Startup safe-idles (logging once) on any validation failure rather than running
+  against an untrusted directory.
 
 ### Dependencies
 - `ping -I` → **BusyBox ping supports `-I`** (no extra package needed).

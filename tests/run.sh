@@ -144,11 +144,25 @@ t_eq "$(cd "$TMP/state" && pwd -P)" "$STATE_DIR" "state directory uses its physi
 chmod 0777 "$STATE_DIR"
 t_false "world-writable state directory rejected" prepare_state_dir
 chmod 0755 "$STATE_DIR"
-mkdir -p "$TMP/writable-parent/state"
+# umask-independent (see the identical fix in set_base_config above): otherwise
+# this dir itself can come out group-writable under a permissive host umask
+# (e.g. 002), tripping prepare_state_dir's own-directory check before the
+# parent-walk logic below is ever reached - passing this test for the wrong
+# reason (Ultracode audit finding).
+( umask 077; mkdir -p "$TMP/writable-parent/state" )
 chmod 0777 "$TMP/writable-parent"
 STATE_DIR="$TMP/writable-parent/state"
 t_false "writable non-sticky parent rejected" prepare_state_dir
 chmod 0700 "$TMP/writable-parent"
+# The accept-side counterpart: a writable parent IS safe when it has the
+# sticky bit set and the child itself is still owned by us - the same
+# shared-tmp-safe pattern the real router's /var -> tmp -> .../ifwatchdog
+# chain relies on (verified live against the router in this project's
+# history). Previously untested (Ultracode audit finding).
+( umask 077; mkdir -p "$TMP/sticky-parent/state" )
+chmod 1777 "$TMP/sticky-parent"
+STATE_DIR="$TMP/sticky-parent/state"
+t_true "sticky writable parent accepted (shared-tmp-safe pattern)" prepare_state_dir
 STATE_DIR=relative-state
 t_false "relative state directory rejected" prepare_state_dir
 ln -s "$TMP/state" "$TMP/state-link"
