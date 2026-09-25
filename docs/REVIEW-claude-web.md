@@ -36,12 +36,15 @@ tunnel is restarted.
 - `ifwatchdog/files/ifwatchdog.init` — procd service.
 - `ifwatchdog/files/ifwatchdog.config` — UCI defaults (disabled, monitor).
 - `luci-app-ifwatchdog/…/overview.js` — GUI; `…/rpcd/ifwatchdog` — status ubus; `…/acl.d/…` — ACL.
-- `tests/run.sh` — 103 mock checks (run without OpenWrt).
+- `tests/run.sh` — 198 mock checks (run without OpenWrt).
 
 ## How it was verified
-- **Static:** `shellcheck` (style level, clean) for all shell files.
-- **Unit/mock:** `tests/run.sh` — 103 checks (validators, denylist, `validate_config`, detection,
-  `take_action`/debounce/breaker, status JSON).
+- **Static:** `shellcheck` (style level, clean) for all shell files; a GitHub Actions workflow
+  (`.github/workflows/ci.yml`) now runs it, plus a real BusyBox `ash -n` syntax check and the full
+  `tests/run.sh` suite, on every push to `main` and every pull request.
+- **Unit/mock:** `tests/run.sh` — 198 checks (validators, denylist, `validate_config`, detection,
+  `take_action`/debounce/breaker, status JSON, `prepare_state_dir()`'s directory validation, symlink
+  safety on every predictable-path write).
 - **Integration (QEMU, real OpenWrt 25.12.5):** against a **real ProtonVPN tunnel** + a
   **policy-routing kill switch** + a simulated client on the fail-closed network. Demonstrated:
   monitor detection with no action; the denylist refuses `lan` (LAN stayed reachable);
@@ -62,6 +65,15 @@ tunnel is restarted.
 - Suggestions for additional guards that make sense on a security device are welcome.
 
 ## Not done yet (explicitly out of scope so far)
-No CI; no signed package feed; no out-of-band alerting when an instance itself stops updating
-(tracked as an issue; the alert path must not traverse the fail-closed network); no on-device UAT yet
-(the QEMU run above is the pre-UAT gate — `docs/UAT.md` is the on-device acceptance).
+No signed package feed (a `.apk` builds correctly from the tagged GitHub release via
+`PKG_SOURCE`/`PKG_HASH` and has been sideloaded on production hardware repeatedly via
+`apk add --allow-untrusted`, but there is no automated build+publish pipeline or one-click
+`System → Software` install yet); no out-of-band alerting when an instance itself stops updating
+(tracked as an issue; the alert path must not traverse the fail-closed network).
+
+On-device UAT is no longer pending: the QEMU run above was the pre-UAT gate, and extensive real-hardware
+acceptance has since run on the actual production router (see `docs/UAT.md`) — staged activation through
+`action=ifup`, deliberate stall simulations (full WAN outage, WireGuard-only path block, denylist
+refusal, stale-lock recovery, concurrent-section shared-lock contention, `action=script`, each detection
+method in isolation), and CI (`.github/workflows/ci.yml`) now runs shellcheck + the full test suite on
+every push/PR.

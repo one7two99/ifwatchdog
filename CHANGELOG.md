@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Documentation drift found by a follow-up review after the Ultracode audit: README.md's status banner
+  still named `v0.2.3`, and `docs/HOW-IT-WORKS.md` still stated a stale `tests/run.sh` check count.
+
+### Build
+- `PKG_HASH` in `ifwatchdog/Makefile` updated to match `v0.2.4`'s real tagged archive (computed after
+  tagging, per the documented release sequence — see the Versioning section below).
+
 ## [0.2.4] - 2026-09-25
 
 ### Added
@@ -229,6 +237,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   procd `reload` did not pick up new UCI values, so LuCI "Save & Apply" only took effect after a
   manual restart.
 
+## [0.1.0] - 2026-09-13
+
 ### Changed
 - LuCI: **help text on every setting**; `protected_networks` gained a placeholder/hint.
 
@@ -251,3 +261,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 [0.2.2]: https://github.com/one7two99/ifwatchdog/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/one7two99/ifwatchdog/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/one7two99/ifwatchdog/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/one7two99/ifwatchdog/releases/tag/v0.1.0

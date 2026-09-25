@@ -40,7 +40,8 @@ ifwatchdog/                      # this repo
 │  ├─ htdocs/luci-static/resources/view/ifwatchdog/overview.js
 │  └─ root/usr/share/{luci/menu.d,rpcd/acl.d}/…json
 │     + root/usr/libexec/rpcd/ifwatchdog       # status ubus for the GUI
-├─ .github/workflows/build.yml   # SDK build + feed publish
+├─ .github/workflows/ci.yml      # shellcheck + tests/run.sh on every push/PR (SDK build + signed
+│                                 # feed publish is still planned, not yet automated - see below)
 ├─ README.md  CHANGELOG.md  LICENSE
 ```
 
@@ -59,13 +60,17 @@ config watchdog 'example'
     option interface         'wg0'       # L3 device for ping -I / wg show
     option method            'both'      # handshake | ping | both
     option ping_host         '1.1.1.1'   # methods ping/both only
+    option ping_timeout      '3'         # seconds; methods ping/both only
     option interval          '60'        # seconds between checks
     option max_handshake_age '150'       # s; methods handshake/both only
     option failures          '2'         # consecutive failures before action
     option action            'monitor'   # monitor | ifup | script
     option action_network    'wg0'       # UCI network for ifup (default = interface)
     option script            ''          # when action=script
+    list   protected_networks 'mgmt*'    # extra denylist patterns, on top of the automatic ones
     option debounce          '120'       # minimum seconds between two actions
+    option max_actions       '5'         # circuit breaker: max actions per action_window
+    option action_window     '3600'      # circuit breaker window, seconds
     option log               '1'
 ```
 
@@ -249,13 +254,26 @@ Modern LuCI = **client-side JS** (`form`, `network`, `ubus`), not the old Lua CB
 - **Signing-key handling** in CI (secret, rotation, key docs in the README).
 - **`interface` = L3 device vs. UCI network**: keep the mapping consistent (wg/ping need the device,
   `ifup` needs the network).
-- Optional later: **submission to `openwrt/packages`** → lands in the official index.
+- **Submission to `openwrt/packages`/`openwrt/luci`**: attempted (PR openwrt/packages#30593,
+  openwrt/luci#9068) and withdrawn — their automated Formality Check hard-requires a "First Last"-style
+  author/committer name (a bare GitHub handle is rejected, not just discouraged), which the maintainer
+  chose not to provide. The prepared branches still exist on the forks (`one7two99/packages` branch
+  `add-ifwatchdog`, `one7two99/luci` branch `add-luci-app-ifwatchdog`); resubmission is a `commit --amend`
+  away if that decision ever changes. Not pursued further otherwise.
 
 ---
 
 ## Milestones
 
-1. **M1 — base service** (`ifwatchdog`): UCI + procd + check script; stall fix proven.
-2. **M2 — GUI** (`luci-app-ifwatchdog`): form + interface dropdown + live status.
-3. **M3 — CI + feed**: GitHub Actions builds the `.apk`, signed feed on Pages, README install guide.
-4. **M4 — polish / release `0.1.0`**: multi-instance, docs, screenshots; shareable.
+1. **M1 — base service** (`ifwatchdog`): UCI + procd + check script; stall fix proven. ✅ done.
+2. **M2 — GUI** (`luci-app-ifwatchdog`): form + interface dropdown + live status. ✅ done.
+3. **M3 — CI + feed**: split into two halves. **CI (shellcheck + `tests/run.sh` on every push/PR)** is
+   ✅ done (`.github/workflows/ci.yml`). **A signed feed with an automated SDK build + Pages publish**
+   is still not done — the `.apk` build itself works and has been used repeatedly (`ifwatchdog/Makefile`
+   pulls from a tagged GitHub release, builds cleanly via the OpenWrt SDK, and has been sideloaded onto
+   production hardware via `apk add --allow-untrusted` for every release from v0.2.1 onward), but there
+   is no CI job that builds and publishes it automatically, and no `System → Software` one-click install.
+4. **M4 — polish / release `0.1.0`**: superseded by how the project actually shipped — instead of one
+   gated "0.1.0 polish" release, every meaningful change since has gone out as its own tagged point
+   release (`v0.1.0` through the current `v0.2.4`, see `CHANGELOG.md`), each backed by the regression
+   suite and, from `v0.2.0` onward, extensive real-hardware on-device UAT (`docs/UAT.md`).

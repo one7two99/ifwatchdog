@@ -1,8 +1,10 @@
 # Installing / uninstalling `ifwatchdog`
 
 There is **no signed package feed yet** (tracked as open work — see `SPEC.md` → *Open items*, milestone
-M3). Until then, install by copying the files directly onto the router over SSH. This is the exact
-method used for the on-device UAT in `UAT.md`, verified end-to-end on real OpenWrt 25.12.5 hardware.
+M3), so there's no one-click **System → Software** install. Two working alternatives exist instead, both
+verified end-to-end on real OpenWrt 25.12.5 hardware: copying the files directly onto the router over
+SSH (below), or building and sideloading a real `.apk` yourself (further down) — the latter is what
+production UAT has actually used for upgrades since `v0.2.1`.
 
 > ⚠️ Read `UAT.md` first if you're installing on a device you rely on. In particular: do the **pre-flight
 > checklist** (console access, a way to disable the service if you get locked out, and config backups)
@@ -73,12 +75,44 @@ ssh "$ROUTER" 'rm -f /tmp/luci-indexcache*; /etc/init.d/rpcd restart; /etc/init.
 
 (A hard browser refresh may be needed to pick up a changed `overview.js`, since browsers cache it.)
 
+### Sideload via `.apk` (build it yourself, no feed needed)
+
+`ifwatchdog/Makefile` builds a real, `noarch` `.apk` from the tagged GitHub release
+(`PKG_SOURCE`/`PKG_SOURCE_URL`/`PKG_HASH` — see `SPEC.md`'s Versioning section). This has been the
+actual install/upgrade method used on the production UAT router for every release from `v0.2.1`
+onward, and registers the package with `apk` (so it shows up under **System → Software → Installed**
+with a real version number), unlike the raw file-copy method above.
+
+```sh
+# In an OpenWrt SDK matching your target (e.g. mediatek/filogic), with this repo's
+# ifwatchdog/ symlinked or copied into the SDK's package/ directory:
+make package/ifwatchdog/{clean,compile} V=s
+# -> bin/packages/<arch>/base/ifwatchdog-<version>-r1.apk
+
+ROUTER=root@192.168.1.1   # adjust
+scp -O bin/packages/*/base/ifwatchdog-*.apk "$ROUTER:/root/"
+ssh "$ROUTER" 'apk add --allow-untrusted /root/ifwatchdog-*.apk'
+```
+
+`apk` protects an existing `/etc/config/ifwatchdog` automatically: if one is already there (e.g. from a
+prior raw-file sideload), it leaves it untouched and drops the package's own default config next to it
+as `/etc/config/ifwatchdog.apk-new` instead of overwriting it — safe to delete once reviewed.
+
+> ⚠️ **`apk add`/`apk upgrade` does NOT restart the running daemon.** Verified repeatedly in production:
+> the old process keeps running the old code after a package upgrade until you explicitly run
+> `/etc/init.d/ifwatchdog restart`. Always follow an apk-based install/upgrade with an explicit restart
+> and confirm the PID actually changed (`ps w | grep ifwatchdog.sh`) before considering the upgrade done.
+
+The LuCI app (`luci-app-ifwatchdog`) is not yet packaged as its own `.apk` the same way — it's still
+installed via the raw file-copy method above.
+
 ### Once a signed feed exists (future)
 
-The plan (see `SPEC.md`) is a one-click install: add the feed's public key and URL, then install
-`ifwatchdog` + `luci-app-ifwatchdog` from **System → Software**, with a `.apk` attached to GitHub
-Releases as a sideload fallback (`apk add --allow-untrusted ./ifwatchdog*.apk`). Neither exists yet;
-this document will be updated when they do.
+The plan (see `SPEC.md`) is a fully one-click install: add the feed's public key and URL, then install
+`ifwatchdog` + `luci-app-ifwatchdog` from **System → Software** directly, with automated CI building
+and publishing the `.apk` on every tag. What's still missing is exactly that automation (the build
+itself already works, see above) and a hosted, signed index — this document will be updated once both
+exist.
 
 ## Uninstall
 
@@ -111,9 +145,10 @@ ssh "$ROUTER" '
 '
 ```
 
-Once installed via a real package (`.apk`/feed, when that exists), `opkg`/`apk remove ifwatchdog
-luci-app-ifwatchdog` will do the equivalent and — per the package manager's normal convention — keep
-`/etc/config/ifwatchdog` as a conffile unless you also pass the "purge configs" option.
+If `ifwatchdog` was installed via the `.apk` method above, `apk del ifwatchdog` does the equivalent —
+and per apk's normal convention, keeps `/etc/config/ifwatchdog` as a conffile rather than deleting it
+(`luci-app-ifwatchdog` still needs the raw-file removal above, since it isn't packaged as its own `.apk`
+yet).
 
 ## Rollback without uninstalling
 

@@ -50,7 +50,9 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Boot(["service start, or any\nUCI config change"]) --> Validate{"validate_config()\n— runs ONCE, not\nper cycle: denylist,\ninput bounds, script\nconfinement, ..."}
+    Boot(["service start, or any\nUCI config change"]) --> PrepDir{"prepare_state_dir()\n— runs FIRST, before\nanything else: STATE_DIR\nmust be owned by us, no\ngroup/other-write unless\nsticky bit + owned child"}
+    PrepDir -->|"unsafe or\nunavailable"| IdleDir(["log once, safe_idle()\n— never even reaches\nload_config()"])
+    PrepDir -->|safe| Validate{"validate_config()\n— runs ONCE, not\nper cycle: denylist,\ninput bounds, script\nconfinement, ..."}
     Validate -->|"invalid\n(e.g. action_network\nis protected)"| Idle(["status = invalid\nidles forever —\nonly SIGTERM/SIGINT\ncan ever exit"])
     Validate -->|valid| Start(["check tick"])
     Start --> Alive{"is_alive()?"}
@@ -65,13 +67,16 @@ flowchart TD
     Debounce -->|no| Skip["status = debounced\nreset counter"]
     Debounce -->|yes| Lock{"shared-target lock\nacquired? (O_EXCL;\na lock older than 2 min\nis treated as abandoned\nand broken)"}
     Lock -->|"no, contended"| Busy["status = lockbusy\nCOUNTER KEPT\n(transient contention,\nnot a policy hold)"]
-    Lock -->|yes| Breaker{"actions on this TARGET\nin the last 'action_window'\n< 'max_actions'?\n(shared across every\ninstance watching it)"}
+    Lock -->|yes| Policy{"shared_breaker_policy_ok()\n— every OTHER enabled\nifup/script section on\nthis TARGET agrees on\nmax_actions + action_window?\n(re-read live from UCI)"}
+    Policy -->|"no\n(conflicting or\nunreadable peer policy)"| PolicyTrip["status = breaker\nreset counter\n— refuses; a permissive\nsection can't bypass a\nstricter one's cap"]
+    Policy -->|yes| Breaker{"actions on this TARGET\nin the last 'action_window'\n< 'max_actions'?\n(shared across every\ninstance watching it)"}
     Breaker -->|no| Trip["status = breaker\nreset counter\n— refuses, logs once loudly\nthen quietly per cycle"]
     Breaker -->|yes| Act["run 'ifup <network>'\nor the confined script\n(60s timeout, whole\nprocess tree killed)\nreset counter"]
     Act --> Sleep
     LogOnly --> Sleep
     Skip --> Sleep
     Busy --> Sleep
+    PolicyTrip --> Sleep
     Trip --> Sleep
     SetAlive --> Sleep
     Holding --> Sleep

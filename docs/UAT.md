@@ -15,9 +15,16 @@ The residual risk lives in commissioning, not in the code. Before enabling **any
 action on the real router:
 1. **Serial/console access tested now** — physically confirm the console gives a root shell, so a lost
    SSH/LAN path is recoverable. Do not rely on it untested.
-2. **Auto-disable armed *before* start** — schedule a safety net that stops the watchdog even if you
-   are locked out, e.g. `echo '*/5 * * * * /etc/init.d/ifwatchdog stop' >> /etc/crontabs/root` for the
-   acceptance window (remove it once accepted). Arm it **before** the first enable, not after.
+2. **Auto-disable armed *before* switching to `action=ifup`/`script`** — schedule a short-lived safety
+   net, e.g. `echo '*/5 * * * * /etc/init.d/ifwatchdog stop' >> /etc/crontabs/root`, right before you
+   flip an instance to a real action. **This is not needed for `action=monitor`** (it can never lock you
+   out — it never runs `ifup`), and it must **not** be left armed for an entire multi-hour/multi-day
+   acceptance window: it fires unconditionally on its own schedule regardless of whether you're actually
+   locked out, so once armed it stops the service within one interval either way. Confirm you're not
+   locked out, then **remove the cron entry within minutes** (`crontab -e` / edit `/etc/crontabs/root`)
+   — do not rely on it as a standing background guard. (Learned the hard way once: arming it before a
+   `monitor`-only stage — which never needed it — silently killed a legitimate multi-hour observation
+   window at the very next 5-minute mark.)
 3. **Config backup + rollback command ready** — `cp /etc/config/ifwatchdog /root/ifwatchdog.uci.bak`;
    know the rollback: `uci set ifwatchdog.<inst>.enabled='0' && /etc/init.d/ifwatchdog restart`.
 4. **Known-good `network`/pbr snapshot** — `cp /etc/config/network /root/network.uci.bak`
