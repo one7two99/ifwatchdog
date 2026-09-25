@@ -5,7 +5,7 @@
 **Interface health watchdog for OpenWrt** — watches a network interface and restarts it when it
 *silently* stalls. Ships with a LuCI web UI (pick the interface from a dropdown).
 
-> ⚠️ **Status: `v0.2.3`, in active on-device evaluation.** This package runs as `root` and can restart
+> ⚠️ **Status: `v0.2.4`, in active on-device evaluation.** This package runs as `root` and can restart
 > interfaces. It has been through several rounds of security review and hardening (see `CHANGELOG.md`)
 > and is currently sideloaded on a real production router as part of a staged rollout (see
 > `docs/UAT.md`) — but that field-validation window is still ongoing. Review `docs/SPEC.md` and
